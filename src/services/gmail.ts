@@ -26,21 +26,14 @@ export const listMessages = async (query: string = '', maxResults: number = 10) 
   // Gmail API just returns message IDs for list, we need to fetch the actual messages
   if (!data.messages) return [];
   
-  const detailedMessages = [];
-  const chunkSize = 20;
-  
-  for (let i = 0; i < data.messages.length; i += chunkSize) {
-    const chunk = data.messages.slice(i, i + chunkSize);
-    const chunkResults = await Promise.all(
-      chunk.map(async (msg: { id: string }) => {
-        const msgRes = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        return msgRes.json();
-      })
-    );
-    detailedMessages.push(...chunkResults);
-  }
+  const detailedMessages = await Promise.all(
+    data.messages.map(async (msg: { id: string }) => {
+      const msgRes = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      return msgRes.json();
+    })
+  );
 
   return detailedMessages;
 };
@@ -129,38 +122,4 @@ export const createDraft = async (to: string, subject: string, body: string, inR
   }
   
   return res.json();
-};
-
-export const trashMessage = async (id: string) => {
-  const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${id}/trash`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` }
-  });
-
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `Failed to trash message: ${res.status}`);
-  }
-  
-  return res.json().catch(() => ({}));
-};
-
-export const untrashMessage = async (id: string) => {
-  const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated');
-
-  const res = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${id}/untrash`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` }
-  });
-
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `Failed to untrash message: ${res.status}`);
-  }
-  
-  return res.json().catch(() => ({}));
 };

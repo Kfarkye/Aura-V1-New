@@ -6,7 +6,7 @@ import { MessageRenderer } from './components/MessageRenderer';
 import { WorkspaceDashboard } from './components/WorkspaceDashboard';
 import { DriveFilePickerModal } from './components/DrivePickerModal';
 import { initAuth, googleSignIn, logout } from './services/auth';
-import { createHtmlDocument, exportDriveFile, type DriveFile } from './services/drive';
+import type { DriveFile } from './services/drive';
 import type { User } from 'firebase/auth';
 
 interface Message {
@@ -122,11 +122,6 @@ export default function App() {
     }
   };
 
-  const handleAskAI = (contextText: string, metadata?: string) => {
-    const prompt = metadata ? `Context from Workspace:\n${contextText}\n\n${metadata}\n\nPlease analyze this:` : `Context from Workspace:\n${contextText}\n\nPlease analyze this:`;
-    setInput(prev => prev + (prev.length > 0 ? '\n\n' : '') + prompt);
-  };
-
   const handleSubmit = async () => {
     if ((!input.trim() && attachments.length === 0) || isLoading) return;
 
@@ -158,8 +153,8 @@ export default function App() {
           const { listTasks } = await import('./services/tasks');
 
           const [recentEmails, upcomingEvents, recentDocs, recentTasks] = await Promise.all([
-            listMessages('', 150).catch(() => []),
-            listUpcomingEvents(30).catch(() => []),
+            listMessages('', 5).catch(() => []),
+            listUpcomingEvents(5).catch(() => []),
             getRecentDriveFiles('all').catch(() => []),
             listTasks().catch(() => [])
           ]);
@@ -238,10 +233,8 @@ CRITICAL INSTRUCTIONS FOR AURA ENGINE:
 4. If the user asks you to draft a reply or compose an email, you can specify a \`create_drafts\` array in your JSON artifact. Make sure to include the EXACT thread headers if it's a reply (use \`inReplyToMessageId\` with the ID of the email AND \`threadId\`).
 5. If the user asks you to "create a document", "draft a brief", or "write a report", you can specify a \`create_docs\` array in your JSON artifact.
 6. If the user asks you to "track expenses", "log invoices", or organize data in a spreadsheet, you can specify a \`create_sheets\` array in your JSON artifact. Provide a title, headers, and an array of rows.
-7. If the user asks you to delete specific emails or spam, specify a \`delete_emails_query\` array with a list of Gmail search queries. Cross-reference the LATEST EMAILS context to intelligently correct any user typos (e.g., 'awards' to 'rewards') and construct accurate search queries.
-8. If the user asks you to undelete or restore emails they previously deleted, specify a \`restore_emails_query\` array with a list of Gmail search queries.
-9. CLEARLY distinguish your high-level text response from the raw data. DO NOT output massive raw JSON blocks directly into the text response. 
-10. When the user asks you to lookup, curate, summarize, or synthesize data from their workspace (emails, events, docs), you MUST proactively format the results in a curated dashboard artifact using the following EXACT tags:
+7. CLEARLY distinguish your high-level text response from the raw data. DO NOT output massive raw JSON blocks directly into the text response. 
+8. If requested, you MUST format summaries, action items, or next steps in a curated dashboard artifact using the following EXACT tags:
 
 [AURA_ARTIFACT type="work"]
 {
@@ -249,13 +242,11 @@ CRITICAL INSTRUCTIONS FOR AURA ENGINE:
   "summary": "Overall context summary.",
   "action_items": [ { "item": "To Do thing", "due": "When" } ],
   "next_steps": [ "Step 1", "Step 2" ],
-  "data": [ { "id": "email_or_doc_id", "subject": "Subject of item", "from": "sender or author", "date": "date string", "snippet": "short context summary", "signal": "category tag e.g. Urgent", "action": "suggested action", "action_url": "optional URL to open (e.g. promo link)" } ],
+  "data": [ { "id": "email_or_doc_id", "subject": "Subject of item", "from": "sender or author", "date": "date string", "snippet": "short context summary", "signal": "category tag e.g. Urgent", "action": "suggested action" } ],
   "create_tasks": [ { "title": "Buy groceries", "notes": "Milk and bread" } ],
   "create_drafts": [ { "to": "email@example.com", "subject": "Re: Subject", "body": "Hey there...", "inReplyToMessageId": "email_id_here", "threadId": "thread_id_here" } ],
   "create_docs": [ { "title": "Project Brief", "body": "1. Introduction\\n2. Goals..." } ],
   "create_sheets": [ { "id": "optional_existing_sheet_id", "title": "Expense Tracking", "headers": ["Date", "Description", "Amount"], "rows": [["2023-10-27", "Office Supplies", "45.00"]] } ],
-  "delete_emails_query": [ "from:tomocredit" ],
-  "restore_emails_query": [ "from:tomocredit" ],
   "meta": { "source": "Workspace", "account": "${currentUserEmail}", "scope": "Workspace Scan", "generated": "${currentTime}" }
 }
 [/AURA_ARTIFACT]`
@@ -350,85 +341,13 @@ CRITICAL INSTRUCTIONS FOR AURA ENGINE:
     }
   };
 
-  const handleExportDoc = async () => {
-    if ((!input.trim() && attachments.length === 0) || isLoading) return;
-
-    setIsLoading(true);
-    const loadingMessageId = Date.now().toString();
-    const userMessageContent = input.trim();
-    const currentAttachments = [...attachments];
-    
-    setMessages(prev => [
-      ...prev, 
-      ...(userMessageContent ? [{ id: 'temp-'+Date.now(), role: 'user' as const, content: `Please create a Google Doc based on my prompt: ${userMessageContent}` }] : []),
-      { id: loadingMessageId, role: 'model', content: '*Generating document. Please wait...*' }
-    ]);
-    
-    setInput('');
-    setAttachments([]);
-
-    try {
-      let attachmentTextContext = '';
-      if (currentAttachments.length > 0) {
-        for (const attachment of currentAttachments) {
-          const content = await exportDriveFile(attachment.id, attachment.mimeType);
-          attachmentTextContext += `--- Document: ${attachment.name} ---\n${content}\n\n`;
-        }
-      }
-
-      const docPrompt = `You are an expert document generator. The user has provided the following prompt or context:
-${userMessageContent}
-
-${attachmentTextContext ? `Context from attachments:\n${attachmentTextContext}` : ''}
-
-Expand this context into a fully structured, professional document (e.g. executive summary, project plan, report). Generate the final output as clean, semantic HTML (using <h1>, <h2>, <p>, <ul>, <li>, <strong>, etc.) suitable for a Google Doc. Do NOT wrap it in markdown code blocks, just return the raw HTML. Ensure there is a main <h1> title and well-organized sections.`;
-
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'chat',
-          messages: [{ role: 'user', content: docPrompt }]
-        })
-      });
-
-      const dataText = await response.text();
-      let htmlContent = dataText;
-      if (htmlContent.startsWith('\`\`\`html')) {
-         htmlContent = htmlContent.replace(/\`\`\`html\n/, '');
-         htmlContent = htmlContent.replace(/\n\`\`\`$/, '');
-      }
-
-      const titleMatch = htmlContent.match(/<h1[^>]*>(.*?)<\/h1>/i);
-      const docTitle = titleMatch && titleMatch[1] ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'AI Generated Document';
-
-      const createdDoc = await createHtmlDocument(docTitle, htmlContent);
-
-      setMessages(prev => prev.map(msg => 
-        msg.id === loadingMessageId 
-          ? { ...msg, content: `I have generated your document: [**${docTitle}**](https://docs.google.com/document/d/${createdDoc.id}/edit)` }
-          : msg
-      ));
-
-    } catch (error) {
-      console.error('Failed to generate doc:', error);
-      setMessages(prev => prev.map(msg => 
-        msg.id === loadingMessageId 
-          ? { ...msg, content: 'Failed to generate document. Please try again.' }
-          : msg
-      ));
-    }
-
-    setIsLoading(false);
-  };
-
   return (
-    <div className="flex h-screen bg-[var(--aura-bg)] text-[var(--aura-text)] font-sans selection:bg-indigo-500/30">
+    <div className="flex h-screen bg-black text-[#e0e0e0] font-sans selection:bg-indigo-500/30">
       {/* Sidebar */}
-      <div className="hidden md:flex w-64 bg-[var(--aura-bg)] border-r border-[var(--aura-border)] flex-col text-white">
+      <div className="hidden md:flex w-64 bg-black border-r border-[#1a1a1a] flex-col text-white">
         {/* Header */}
         <div className="pt-8 px-6 pb-6 flex items-center gap-3">
-          <div className="w-6 h-6 rounded-full border-[5px] border-[var(--aura-accent)] box-border" />
+          <div className="w-6 h-6 rounded-full border-[5px] border-white box-border" />
           <span className="text-xl font-bold tracking-tight">AURA</span>
         </div>
         
@@ -436,7 +355,7 @@ Expand this context into a fully structured, professional document (e.g. executi
         <div className="px-6 mb-8">
           <button 
             onClick={() => setMessages([])} 
-            className="w-full bg-[var(--aura-accent)] text-[var(--aura-bg)] font-medium py-2.5 rounded-full text-sm hover:bg-[var(--aura-accent-hover)] transition-colors shadow-sm"
+            className="w-full bg-white text-black font-semibold py-2.5 rounded-full text-sm hover:bg-gray-100 transition-colors shadow-sm"
           >
             + New Chat
           </button>
@@ -454,10 +373,10 @@ Expand this context into a fully structured, professional document (e.g. executi
                 <button
                   key={item}
                   onClick={() => setActiveTab(item)}
-                  className={`w-full text-left px-4 py-2.5 rounded-xl text-[14px] transition-all duration-300 font-medium ${
+                  className={`w-full text-left px-4 py-2.5 rounded-xl text-[14px] transition-all duration-300 font-light ${
                     isActive 
-                      ? 'bg-[var(--aura-accent)]/10 text-[var(--aura-accent)]' 
-                      : 'text-[var(--aura-text-muted)] hover:text-[var(--aura-text)] hover:bg-white/5'
+                      ? 'bg-white/10 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]' 
+                      : 'text-white/50 hover:text-white hover:bg-white/5'
                   }`}
                 >
                   {item}
@@ -488,139 +407,118 @@ Expand this context into a fully structured, professional document (e.g. executi
         </div>
       </div>
 
-      {/* Main Content Area */}
-      {activeTab !== 'Chat' && activeTab !== 'Aura OS' && (
-        <div className="flex-1 flex flex-col relative overflow-hidden border-r border-[var(--aura-border)] bg-[var(--aura-card)]">
-          <div className="md:hidden w-full flex items-center gap-3 p-4 border-b border-[var(--aura-border)] bg-[var(--aura-bg)]">
-            <div className="w-5 h-5 rounded-full border-[3px] border-[var(--aura-accent)] box-border" />
-            <span className="text-xl font-bold tracking-tight text-white">AURA ({activeTab})</span>
-          </div>
-          
-          {activeTab === 'Workspace' ? (
-            user ? (
-              <WorkspaceDashboard onAskAI={handleAskAI} />
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full w-full">
-                <h2 className="text-xl font-semibold mb-2">Workspace Disconnected</h2>
-                <p className="text-sm text-white/50 mb-6 max-w-sm text-center">
-                  Connect your Google Workspace to read and compose emails.
-                </p>
-                <button 
-                  onClick={handleAuth}
-                  disabled={isLoggingIn}
-                  className="bg-[var(--aura-accent)] text-[var(--aura-bg)] font-medium py-2.5 px-6 rounded-full text-sm hover:bg-[var(--aura-accent-hover)] transition-colors shadow-sm disabled:opacity-50"
-                >
-                   Connect Google Workspace
-                </button>
-              </div>
-            )
-          ) : (
-            <div className="flex items-center justify-center h-full text-white/40">
-              {activeTab} is currently under construction.
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Persistent Chat Area */}
-      <div className={`${activeTab === 'Chat' || activeTab === 'Aura OS' ? 'flex' : 'hidden md:flex'} flex-col relative overflow-hidden bg-[var(--aura-bg)] transition-all duration-300 ${
-        activeTab === 'Chat' || activeTab === 'Aura OS' ? 'flex-1 items-center' : 'w-full md:w-[450px] shrink-0 border-l border-[var(--aura-border)] z-10'
-      }`}>
+      {/* Main Chat Area */}
+      <div className="flex-1 flex flex-col items-center relative overflow-hidden bg-black">
         {/* Main Header (Mobile) */}
-        <div className="md:hidden w-full flex items-center gap-3 p-4 border-b border-[var(--aura-border)] bg-[var(--aura-bg)]">
-          <div className="w-5 h-5 rounded-full border-[3px] border-[var(--aura-accent)] box-border" />
-          <span className="text-xl font-bold tracking-tight text-white">AURA Chat</span>
+        <div className="md:hidden w-full flex items-center gap-3 p-4 border-b border-[#1a1a1a] bg-black">
+          <div className="w-5 h-5 rounded-full border-[3px] border-white box-border" />
+          <span className="text-xl font-bold tracking-tight text-white">AURA</span>
         </div>
 
-        <div className={`w-full overflow-y-auto overflow-x-hidden p-4 sm:p-6 pb-32 style-scrollbar ${
-          activeTab === 'Chat' || activeTab === 'Aura OS' ? 'flex-1 max-w-4xl' : 'flex-1'
-        }`}>
-          {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full w-full opacity-80 rotate-[-1deg] scale-95 transition-all duration-1000">
-               <div className="w-16 h-16 rounded-full border-[8px] border-[var(--aura-accent)]/10 box-border mb-6 shadow-[0_0_40px_rgba(255,255,255,0.05)]" />
-               <h2 className="text-3xl font-light tracking-tight text-[var(--aura-text-muted)] text-center">
-                 {activeTab === 'Chat' || activeTab === 'Aura OS' ? 'Essential Intelligence.' : 'Ask Aura about your data.'}
-               </h2>
-            </div>
+        {activeTab === 'Workspace' ? (
+          user ? (
+            <WorkspaceDashboard />
           ) : (
-            <div className="space-y-6 pt-4 flex flex-col pb-4">
-              <AnimatePresence>
-                {messages.map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
-                    animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                    transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
-                    className={`w-full flex ${msg.role === 'user' ? 'justify-end ml-auto' : 'justify-start mr-auto'} ${activeTab === 'Chat' || activeTab === 'Aura OS' ? 'max-w-3xl' : 'max-w-full'}`}
-                  >
-                    <div className={`flex gap-3 sm:gap-5 ${
-                      activeTab === 'Chat' || activeTab === 'Aura OS' ? 'max-w-[85%]' : 'max-w-[95%]'
-                    } ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                      {msg.role === 'model' && (
-                        <div className="w-7 h-7 shrink-0 rounded-full border-[2px] border-white/80 box-border shadow-[0_0_15px_rgba(255,255,255,0.15)] opacity-90 backdrop-blur-md flex items-center justify-center mt-1">
-                          <div className="w-3 h-3 rounded-full bg-white/20" />
-                        </div>
-                      )}
-                      
-                      <div className={`${msg.role === 'user' 
-                          ? 'glass-panel py-2.5 px-4 rounded-[20px] rounded-tr-[4px] text-[14px] sm:text-[15px] text-white leading-relaxed font-light tracking-wide shadow-sm' 
-                          : 'py-0.5 text-white/90 text-[14px] sm:text-[15px] leading-relaxed font-light tracking-wide w-full overflow-hidden'}`}>
-                        {msg.role === 'user' ? (
-                          <div className="whitespace-pre-wrap">{msg.content}</div>
-                        ) : (
-                          <MessageRenderer content={msg.content} />
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-              {isLoading && messages[messages.length - 1]?.role === 'user' && (
-                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex justify-start mr-auto w-full ${activeTab === 'Chat' || activeTab === 'Aura OS' ? 'max-w-3xl' : 'max-w-full'}`}>
-                  <div className={`flex gap-3 sm:gap-5 ${activeTab === 'Chat' || activeTab === 'Aura OS' ? 'max-w-[85%]' : 'max-w-[95%]'}`}>
-                     <div className="w-7 h-7 shrink-0 rounded-full border-[2px] border-white/40 box-border shadow-[0_0_15px_rgba(255,255,255,0.05)] opacity-50 flex items-center justify-center mt-1">
-                        <div className="w-3 h-3 rounded-full bg-white/10 animate-ping" />
-                     </div>
-                     <div className="bg-white/5 backdrop-blur-2xl border border-white/5 rounded-[20px] rounded-tl-[4px] flex items-center justify-center px-4 py-2 h-[42px] shadow-[0_4px_24px_rgba(0,0,0,0.2)]">
-                        <div className="flex items-center gap-2 text-[10px] text-white/50 font-mono uppercase tracking-[0.2em]">
-                          <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-pulse"></span>
-                          Processing
-                        </div>
-                     </div>
-                  </div>
-                </motion.div>
-              )}
-              <div ref={messagesEndRef} className="h-10" />
+            <div className="flex flex-col items-center justify-center h-full w-full">
+              <h2 className="text-xl font-semibold mb-2">Workspace Disconnected</h2>
+              <p className="text-sm text-white/50 mb-6 max-w-sm text-center">
+                Connect your Google Workspace to read and compose emails.
+              </p>
+              <button 
+                onClick={handleAuth}
+                disabled={isLoggingIn}
+                className="bg-white text-black font-semibold py-2.5 px-6 rounded-full text-sm hover:bg-gray-100 transition-colors shadow-sm disabled:opacity-50"
+              >
+                 Connect Google Workspace
+              </button>
             </div>
-          )}
-        </div>
+          )
+        ) : (
+          <>
+            <div className="flex-1 w-full max-w-4xl overflow-y-auto overflow-x-hidden p-4 sm:p-6 pb-32 style-scrollbar">
+              {messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full w-full opacity-80 rotate-[-1deg] scale-95 transition-all duration-1000">
+                   <div className="w-16 h-16 rounded-full border-[8px] border-white/10 box-border mb-6 shadow-[0_0_40px_rgba(255,255,255,0.03)]" />
+                   <h2 className="text-3xl font-light tracking-tight text-white/40">Essential Intelligence.</h2>
+                </div>
+              ) : (
+                <div className="space-y-6 pt-4 flex flex-col pb-4">
+                  <AnimatePresence>
+                    {messages.map((msg) => (
+                      <motion.div
+                        key={msg.id}
+                        initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
+                        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                        transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
+                        className={`w-full max-w-3xl flex ${msg.role === 'user' ? 'justify-end ml-auto' : 'justify-start mr-auto'}`}
+                      >
+                        <div className={`flex gap-5 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                          {msg.role === 'model' && (
+                            <div className="w-7 h-7 shrink-0 rounded-full border-[2px] border-white/80 box-border shadow-[0_0_15px_rgba(255,255,255,0.15)] opacity-90 backdrop-blur-md flex items-center justify-center">
+                              <div className="w-3 h-3 rounded-full bg-white/20" />
+                            </div>
+                          )}
+                          
+                          <div className={`${msg.role === 'user' 
+                              ? 'glass-panel py-3 px-5 rounded-[24px] rounded-tr-[4px] text-[15px] text-white leading-relaxed font-light tracking-wide shadow-sm' 
+                              : 'py-0.5 text-white/90 text-[15px] leading-relaxed font-light tracking-wide'}`}>
+                            {msg.role === 'user' ? (
+                              <div className="whitespace-pre-wrap">{msg.content}</div>
+                            ) : (
+                              <MessageRenderer content={msg.content} />
+                            )}
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                  {isLoading && messages[messages.length - 1]?.role === 'user' && (
+                    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-start mr-auto max-w-3xl w-full">
+                      <div className="flex gap-5 max-w-[85%]">
+                         <div className="w-7 h-7 shrink-0 rounded-full border-[2px] border-white/40 box-border shadow-[0_0_15px_rgba(255,255,255,0.05)] opacity-50 flex items-center justify-center">
+                            <div className="w-3 h-3 rounded-full bg-white/10 animate-ping" />
+                         </div>
+                         <div className="bg-white/5 backdrop-blur-2xl border border-white/5 rounded-[24px] rounded-tl-[4px] flex items-center justify-center px-5 py-3 h-[46px] shadow-[0_4px_24px_rgba(0,0,0,0.2)]">
+                            <div className="flex items-center gap-2 text-[10px] text-white/50 font-mono uppercase tracking-[0.2em]">
+                              <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-pulse"></span>
+                              Processing
+                            </div>
+                         </div>
+                      </div>
+                    </motion.div>
+                  )}
+                  <div ref={messagesEndRef} className="h-10" />
+                </div>
+              )}
+            </div>
 
-        {/* Input Area */}
-        <div className={`absolute w-full bottom-0 bg-gradient-to-t from-[var(--aura-bg)] via-[var(--aura-bg)] to-transparent pt-32 pb-6 sm:pb-8 px-4 backdrop-blur-[2px] z-20`}>
-          <div className="w-full max-w-3xl mx-auto relative group">
-             <ChatInput 
-               value={input} 
-               onChange={setInput} 
-               onSubmit={handleSubmit} 
-               onExportDoc={handleExportDoc}
-               isLoading={isLoading}
-               onOpenDrive={user ? () => setIsDrivePickerOpen(true) : undefined}
-               attachments={attachments}
-               onRemoveAttachment={(id) => setAttachments(prev => prev.filter(a => a.id !== id))}
-             />
-             <div className="text-center mt-3 sm:mt-5 mb-1 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-               <span className="font-mono text-[8px] sm:text-[9px] text-white/20 uppercase tracking-[0.4em]">
-                 Built for Enterprise on Gemini
-               </span>
-             </div>
-          </div>
-        </div>
-        
-        <DriveFilePickerModal 
-          isOpen={isDrivePickerOpen} 
-          onClose={() => setIsDrivePickerOpen(false)} 
-          onFileSelect={handleFileSelect} 
-        />
+            {/* Input Area */}
+            <div className="absolute w-full bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent pt-32 pb-8 px-4 backdrop-blur-[2px]">
+              <div className="w-full max-w-3xl mx-auto relative group">
+                 <ChatInput 
+                   value={input} 
+                   onChange={setInput} 
+                   onSubmit={handleSubmit} 
+                   isLoading={isLoading}
+                   onOpenDrive={user ? () => setIsDrivePickerOpen(true) : undefined}
+                   attachments={attachments}
+                   onRemoveAttachment={(id) => setAttachments(prev => prev.filter(a => a.id !== id))}
+                 />
+                 <div className="text-center mt-5 mb-1 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
+                   <span className="font-mono text-[9px] text-white/20 uppercase tracking-[0.4em]">
+                     Built for Enterprise on Gemini
+                   </span>
+                 </div>
+              </div>
+            </div>
+            
+            <DriveFilePickerModal 
+              isOpen={isDrivePickerOpen} 
+              onClose={() => setIsDrivePickerOpen(false)} 
+              onFileSelect={handleFileSelect} 
+            />
+          </>
+        )}
       </div>
     </div>
   );

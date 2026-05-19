@@ -1,4 +1,4 @@
-import { ArrowUp, HardDrive, X, FileText } from 'lucide-react';
+import { ArrowUp, HardDrive, X } from 'lucide-react';
 import React, { useRef, useEffect } from 'react';
 import { DriveFile } from '../services/drive';
 
@@ -6,14 +6,13 @@ interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  onExportDoc?: () => void;
   isLoading: boolean;
   onOpenDrive?: () => void;
   attachments?: DriveFile[];
   onRemoveAttachment?: (id: string) => void;
 }
 
-export function ChatInput({ value, onChange, onSubmit, onExportDoc, isLoading, onOpenDrive, attachments = [], onRemoveAttachment }: ChatInputProps) {
+export function ChatInput({ value, onChange, onSubmit, isLoading, onOpenDrive, attachments = [], onRemoveAttachment }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -68,32 +67,20 @@ export function ChatInput({ value, onChange, onSubmit, onExportDoc, isLoading, o
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Query the engine..."
-          className={`w-full glass-panel rounded-[32px] py-4 ${onOpenDrive ? 'pl-12' : 'pl-6'} pr-24 focus:outline-none focus:border-white/30 transition-all duration-500 text-white placeholder:font-mono placeholder:text-white/20 placeholder:text-[13px] resize-none leading-relaxed text-[15px] font-light block`}
+          className={`w-full glass-panel rounded-[32px] py-4 ${onOpenDrive ? 'pl-12' : 'pl-6'} pr-16 focus:outline-none focus:border-white/30 transition-all duration-500 text-white placeholder:font-mono placeholder:text-white/20 placeholder:text-[13px] resize-none leading-relaxed text-[15px] font-light block`}
           rows={1}
           style={{ minHeight: '56px' }}
         />
         
-        <div className="absolute right-2 mb-2 flex items-center gap-1 z-10">
-          {onExportDoc && (
-            <button
-              onClick={onExportDoc}
-              disabled={(!value.trim() && attachments.length === 0) || isLoading}
-              className="h-10 w-10 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all duration-300 focus:outline-none disabled:opacity-50 disabled:hover:bg-transparent"
-              title="Generate Google Doc"
-            >
-              <FileText className="h-[18px] w-[18px]" strokeWidth={2} />
-            </button>
-          )}
-          <button
-            onClick={onSubmit}
-            disabled={(!value.trim() && attachments.length === 0) || isLoading}
-            className="h-10 w-10 rounded-full flex items-center justify-center transition-all duration-300 focus:outline-none 
-              disabled:bg-transparent disabled:text-white/20 disabled:scale-100
-              bg-white text-black hover:bg-gray-200 hover:scale-[1.04] shadow-[0_2px_10px_rgba(255,255,255,0.15)]"
-          >
-            <ArrowUp className="h-[18px] w-[18px]" strokeWidth={2.5} />
-          </button>
-        </div>
+        <button
+          onClick={onSubmit}
+          disabled={(!value.trim() && attachments.length === 0) || isLoading}
+          className="absolute right-2 mb-2 h-10 w-10 rounded-full flex items-center justify-center transition-all duration-300 focus:outline-none 
+            disabled:bg-transparent disabled:text-white/20 disabled:scale-100
+            bg-white text-black hover:bg-gray-200 hover:scale-[1.04] shadow-[0_2px_10px_rgba(255,255,255,0.15)] z-10"
+        >
+          <ArrowUp className="h-[18px] w-[18px]" strokeWidth={2.5} />
+        </button>
       </div>
     </div>
   );

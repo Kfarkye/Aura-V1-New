@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, FileText, File, HardDrive, RefreshCw, Table, Presentation, Search, Image, Video } from 'lucide-react';
+import { X, FileText, File, HardDrive, RefreshCw, Table, Presentation } from 'lucide-react';
 import { getRecentDriveFiles, DriveFile, DocumentType } from '../services/drive';
 import { WorkspaceAuthError } from './WorkspaceAuthError';
 
@@ -15,27 +15,18 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<DocumentType>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchQuery(searchQuery);
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
 
   useEffect(() => {
     if (isOpen) {
-      loadFiles(filter, debouncedSearchQuery);
+      loadFiles(filter);
     }
-  }, [isOpen, filter, debouncedSearchQuery]);
+  }, [isOpen, filter]);
 
-  const loadFiles = async (currentFilter: DocumentType, currentSearch: string) => {
+  const loadFiles = async (currentFilter: DocumentType) => {
     setLoading(true);
     setError('');
     try {
-      const data = await getRecentDriveFiles(currentFilter, currentSearch);
+      const data = await getRecentDriveFiles(currentFilter);
       setFiles(data);
     } catch (err: any) {
       setError(err.message || 'Failed to load Drive files');
@@ -48,8 +39,6 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
     if (mimeType.includes('document') || mimeType.includes('word')) return <FileText className="w-5 h-5 text-blue-400" />;
     if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return <Table className="w-5 h-5 text-emerald-400" />;
     if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return <Presentation className="w-5 h-5 text-amber-400" />;
-    if (mimeType.includes('image')) return <Image className="w-5 h-5 text-purple-400" />;
-    if (mimeType.includes('video')) return <Video className="w-5 h-5 text-pink-400" />;
     return <File className="w-5 h-5 text-white/40" />;
   };
 
@@ -78,7 +67,7 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
                   <h2 className="text-[15px] font-medium tracking-tight">Google Workspace</h2>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => loadFiles(filter, debouncedSearchQuery)} className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/50 hover:text-white" disabled={loading}>
+                  <button onClick={() => loadFiles(filter)} className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/50 hover:text-white" disabled={loading}>
                     <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
                   <div className="w-px h-4 bg-white/10 mx-1" />
@@ -88,28 +77,9 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
                 </div>
               </div>
               
-              {/* Search Bar */}
-              <div className="px-6 pb-2">
-                <div className="relative flex items-center w-full bg-white/[0.04] border border-white/[0.08] rounded-xl overflow-hidden focus-within:border-white/20 transition-colors">
-                  <Search className="w-4 h-4 text-white/40 ml-3" />
-                  <input
-                    type="text"
-                    placeholder="Search files..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-transparent border-none outline-none py-2 px-3 text-white text-[13px] placeholder:text-white/30"
-                  />
-                  {searchQuery && (
-                    <button onClick={() => setSearchQuery('')} className="p-2 text-white/40 hover:text-white mr-1 transition-colors">
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
               {/* Tabs */}
-              <div className="flex items-center gap-6 px-6 mt-3 overflow-x-auto style-scrollbar">
-                {(['all', 'docs', 'sheets', 'slides', 'media'] as DocumentType[]).map((t) => (
+              <div className="flex items-center gap-6 px-6">
+                {(['all', 'docs', 'sheets', 'slides'] as DocumentType[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setFilter(t)}
@@ -132,7 +102,7 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
                 </div>
               ) : error ? (
                 error.includes('Authentication error') ? (
-                  <WorkspaceAuthError onRetry={() => loadFiles(filter, debouncedSearchQuery)} message={error} onClose={onClose} />
+                  <WorkspaceAuthError onRetry={() => loadFiles(filter)} message={error} onClose={onClose} />
                 ) : (
                   <div className="flex flex-col items-center justify-center py-16 px-6">
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-red-500/10 mb-5">
@@ -142,7 +112,7 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
                     <p className="text-[13px] text-white/50 text-center max-w-sm mb-8 leading-relaxed">
                       {error}
                     </p>
-                    <button onClick={() => loadFiles(filter, debouncedSearchQuery)} className="w-full max-w-[200px] rounded-xl bg-white px-4 py-2.5 text-[14px] font-medium text-black shadow-sm hover:bg-white/90 transition-all">
+                    <button onClick={() => loadFiles(filter)} className="w-full max-w-[200px] rounded-xl bg-white px-4 py-2.5 text-[14px] font-medium text-black shadow-sm hover:bg-white/90 transition-all">
                       Retry
                     </button>
                   </div>

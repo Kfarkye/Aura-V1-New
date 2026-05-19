@@ -1,5 +1,5 @@
 {
-  "name": "Aura Workspace",
+  "name": "Aura",
   "description": "An AI chat app specializing in Music, Sports Prediction markets, Crypto, and Work automation by combining APIs and rendering artifacts with a unified AI model.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
