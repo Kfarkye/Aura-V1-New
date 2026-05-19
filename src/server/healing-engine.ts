@@ -1,0 +1,1 @@
+export class AutonomousHealingEngine { static async generateIssueId(){return '1';} static async executeHeal(...args: any[]){} } export const initHealingEngine = (args: any) => {};

@@ -1,0 +1,1 @@
+export class SpannerAuditClient {} export class BigQueryTelemetry { async streamTelemetryEvent(...args: any[]){} } export class SecretManager {} export class CloudLoggingClient { async writeLog(...args: any[]){} }

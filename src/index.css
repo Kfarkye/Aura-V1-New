@@ -1,0 +1,157 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Jony Ive / Essentialism / Obsidian Black Palette */
+  --color-aura-bg: #000000;
+  --color-aura-card: #0A0A0A;
+  --color-aura-muted: #131313;
+  --color-aura-border: rgba(255, 255, 255, 0.08);
+  --color-aura-border-strong: rgba(255, 255, 255, 0.16);
+  --color-aura-text: #F5F5F5;
+  --color-aura-text-muted: #8E8E93;
+  --color-aura-accent: #FFFFFF;
+  --color-aura-accent-hover: #EBEBEB;
+  --color-aura-red: #FF453A;
+  --color-aura-glass: rgba(20, 20, 20, 0.6);
+
+  /* Series A / Enterprise Shadows */
+  --shadow-premium: 0 4px 24px -4px rgba(0, 0, 0, 0.5), 0 2px 8px -2px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.05);
+  --shadow-premium-hover: 0 8px 32px -4px rgba(0, 0, 0, 0.6), 0 4px 12px -2px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+
+  /* Legacy aliases → Dark equivalents */
+  --color-aura-heading: #FFFFFF;
+  --color-aura-subtle-bg: #111111;
+  --color-aura-accent-muted: #8E8E93;
+  --color-brand-blue: #FFFFFF;
+  --color-brand-blue-bg: #111111;
+  --color-brand-red: #FF453A;
+
+  /* Mapping for existing components */
+  --color-natural-bg: #000000;
+  --color-natural-surface: #0A0A0A;
+  --color-natural-border: rgba(255, 255, 255, 0.08);
+  --color-natural-text: #F5F5F5;
+  --color-natural-heading: #FFFFFF;
+  --color-natural-accent: #FFFFFF;
+  --color-natural-accent-hover: #EBEBEB;
+  --color-natural-accent-muted: #8E8E93;
+}
+
+:root {
+  --chat-column-width: 800px;
+  --aura-bg: var(--color-aura-bg);
+  --aura-surface: var(--color-aura-card);
+  --aura-border: var(--color-aura-border);
+  --aura-text: var(--color-aura-text);
+  --aura-heading: var(--color-aura-accent);
+  --aura-accent: var(--color-aura-accent);
+  --brand-accent: var(--color-aura-accent);
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-aura-bg);
+  color: var(--color-aura-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01", "ss03", "cv02", "cv03", "cv04", "cv09", "cv10";
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  margin: 0;
+  padding: 0;
+  overscroll-behavior-y: none;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+.style-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.style-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.style-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.08); /* Adjusted for dark mode */
+  border-radius: 3px;
+}
+.style-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+.composer-wrapper {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 16px 24px 32px;
+  z-index: 10;
+  box-sizing: border-box;
+}
+.composer-wrapper::before {
+  content: '';
+  position: absolute;
+  top: -40px;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(to top, var(--color-aura-bg), transparent);
+  pointer-events: none;
+}
+.composer-wrapper > div {
+  width: 100%;
+  max-width: var(--chat-column-width);
+}
+
+.glass-panel {
+  background: var(--color-aura-glass);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--color-aura-border);
+  box-shadow: var(--shadow-premium);
+}
+
+.glass-panel-hover:hover {
+  background: rgba(30, 30, 30, 0.7);
+  box-shadow: var(--shadow-premium-hover);
+  border-color: var(--color-aura-border-strong);
+}
+
+.artifact-bounded-container {
+  width: 100%;
+  max-height: 520px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--color-aura-border);
+  background: var(--color-aura-card);
+  margin-top: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+

@@ -1,0 +1,1 @@
+export class FleetManager { constructor(a: any, b: any){} async bootstrap(){} getCapabilities(){ return {}; } getAllRepos(){ return []; } }

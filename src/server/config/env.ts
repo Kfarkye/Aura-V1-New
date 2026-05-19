@@ -1,0 +1,1 @@
+export const config = { isProd: false, google: { cloudProject: "mock", clientId: "mock", clientSecret: "mock", redirectUri: "mock" }, github: { clientId: "mock", clientSecret: "mock", redirectUri: "mock" }, yahoo: { clientId: "mock", clientSecret: "mock", redirectUri: "mock" }, gemini: { apiKey: "mock" }, port: 3000, corsOrigin: "*" };
