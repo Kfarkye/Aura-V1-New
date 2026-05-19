@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, FileText, File, HardDrive, RefreshCw, Table, Presentation, Search } from 'lucide-react';
+import { X, FileText, File, HardDrive, RefreshCw, Table, Presentation, Search, Image, Video } from 'lucide-react';
 import { getRecentDriveFiles, DriveFile, DocumentType } from '../services/drive';
 import { WorkspaceAuthError } from './WorkspaceAuthError';
 
@@ -48,6 +48,8 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
     if (mimeType.includes('document') || mimeType.includes('word')) return <FileText className="w-5 h-5 text-blue-400" />;
     if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return <Table className="w-5 h-5 text-emerald-400" />;
     if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return <Presentation className="w-5 h-5 text-amber-400" />;
+    if (mimeType.includes('image')) return <Image className="w-5 h-5 text-purple-400" />;
+    if (mimeType.includes('video')) return <Video className="w-5 h-5 text-pink-400" />;
     return <File className="w-5 h-5 text-white/40" />;
   };
 
@@ -106,8 +108,8 @@ export function DriveFilePickerModal({ isOpen, onClose, onFileSelect }: DriveFil
               </div>
 
               {/* Tabs */}
-              <div className="flex items-center gap-6 px-6 mt-3">
-                {(['all', 'docs', 'sheets', 'slides'] as DocumentType[]).map((t) => (
+              <div className="flex items-center gap-6 px-6 mt-3 overflow-x-auto style-scrollbar">
+                {(['all', 'docs', 'sheets', 'slides', 'media'] as DocumentType[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setFilter(t)}

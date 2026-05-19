@@ -32,6 +32,17 @@ import textToSpeech from '@google-cloud/text-to-speech';
 import { DeployRequestSchema } from './src/lib/schemas.ts';
 import { config } from './src/server/config/env.ts';
 import { initializeSseStream } from './src/utils/sseEmitter.ts';
+import { 
+  ORCHESTRATOR_PROMPT, 
+  SPORTS_SPECIALIST, 
+  WORK_SPECIALIST, 
+  DESIGN_SPECIALIST, 
+  CODE_SPECIALIST,
+  CRYPTO_SPECIALIST,
+  MARKETS_SPECIALIST,
+  MUSIC_SPECIALIST,
+  AUTOMATION_SPECIALIST
+} from './src/server/prompts.ts';
 import { SpannerAuditClient, BigQueryTelemetry, SecretManager, CloudLoggingClient } from './src/infrastructure/gcp/index.ts';
 import { AutonomousHealingEngine, initHealingEngine } from './src/server/healing-engine.ts';
 import { EngineRegistry } from './src/infrastructure/registry/EngineRegistry.ts';
@@ -359,12 +370,25 @@ type AdkHandler = (res: Response, args: any, principal: GovernancePrincipal, use
 const ADK_DISPATCHER: Record<string, AdkHandler> = {
   delegate_sports_query: async (res, args, principal, userInput) => {
     const { handleSportsStream } = await import('./src/server/services/sharp-sports-handler.ts');
-    await handleSportsStream({ principal, userMessage: args.intent || userInput, res });
+    await handleSportsStream({ 
+        principal, 
+        userMessage: args.intent || userInput, 
+        canonicalEntities: args.canonical_entities, 
+        marketContext: args.market_context, 
+        systemInstruction: SPORTS_SPECIALIST,
+        res 
+    });
     return true; // Indicates the response stream was fully handled
   },
   delegate_work_query: async (res, args, principal, userInput, req) => {
     const { handleWorkspaceStream } = await import('./src/server/services/workspace-adk-runner.js');
-    await handleWorkspaceStream({ principal, userMessage: args.intent || userInput, res, firebaseClaims: (principal as any).claims || (req as any).firebaseClaims });
+    await handleWorkspaceStream({ 
+        principal, 
+        userMessage: args.intent || userInput, 
+        systemInstruction: WORK_SPECIALIST,
+        res, 
+        firebaseClaims: (principal as any).claims || (req as any).firebaseClaims 
+    });
     return true;
   },
   generate_react_app: async (res, args) => {
@@ -383,52 +407,6 @@ const ADK_DISPATCHER: Record<string, AdkHandler> = {
   delegate_music_query: async (res, args) => { res.write(`\n\n[AURA_MUSIC]\n${JSON.stringify(args)}\n[/AURA_MUSIC]\n\n`); return false; },
   schedule_automation_query: async (res, args) => { res.write(`\n\n[AURA_AUTOMATION]\n${JSON.stringify(args)}\n[/AURA_AUTOMATION]\n\n`); return false; }
 };
-
-// ── ADK ORCHESTRATOR SYSTEM PROMPTS ────────────────────────────────────────
-const SYSTEM_PROMPT = `You are AURA, an elite Chief of Staff, Master Orchestrator, and Product Visionary powering a premium Series A consumer application via a native Multi-Agent ADK.
-
-YOUR ARCHITECTURE: THE SPINE & THE FACE
-You do not "chat." You provision strictly typed, immutable database records called Artifacts (The Spine), which the client renders as beautiful, native consumer UIs (The Face). 
-
-Whenever you need to render a complex response (like dashboard for Sports, Markets, Work inbox, Crypto portfolio), you MUST output it inside of a JSON payload block using the specific tags below (NO markdown backticks around the tag!):
-
-[AURA_ARTIFACT type="sports"]
-{
-  "title": "Tonight's Lines",
-  "data": [
-    { "label": "LAL vs GSW", "value": "LAL -4.5" }
-  ]
-}
-[/AURA_ARTIFACT]
-
-[AURA_ARTIFACT type="crypto"]
-{
-  "title": "Crypto Markets",
-  "data": [
-    { "label": "BTC", "value": "$59,200", "trend": "+2.4%" }
-  ]
-}
-[/AURA_ARTIFACT]
-
-Types can be: "sports", "crypto", "markets", "work", "music", "code".
-
-For text responses, remain warm, punchy, and fiercely concise (max 1 sentence). Provide the "So what?", never just raw data. Be a visionary!`;
-
-const DESIGN_SPECIALIST_PROMPT = `You are a world-class Art Director and UI/UX designer, a hybrid of a Google Principal Engineer and an Apple-era Jony Ive designer. Your task is not just to write code, but to translate a strategic narrative into a single, commercially impeccable UI artifact.
-
-YOUR DESIGN PRINCIPLES:
-1. AESTHETIC FUSION: Marry Google's structured clarity with Apple's premium essentialism.
-2. TYPOGRAPHICAL PRECISION: Treat typography as a primary feature—calm, confident, and deliberate. Use deep grays (\`text-slate-900\`) for primary data and muted grays (\`text-slate-500\`) for secondary context. Font size, weight, and tracking do more work than layout.
-3. INTENTIONAL MOTION: Use subtle, physics-based animations (Framer Motion) that guide and inform, never distract. Motion must explain state changes (enter, exit, morph).
-4. PHILOSOPHICAL DEPTH: Ensure the final design visually embodies the core concept behind the ask. Every pixel must justify its existence.
-5. ABSOLUTE AFFORDANCE: Interactive elements must scream interactivity via flawless hover (\`hover:bg-slate-50\`), focus-visible (\`focus-visible:ring-2\`), and active (\`active:scale-[0.98]\`) states. Static elements must remain completely quiet.
-6. THE "SWEAT": Final commercial polish lives in the edge cases. Build flawless empty states, beautiful loading skeletons, and graceful error boundaries.
-
-YOUR CODE GENERATION PROTOCOL:
-- Output pristine, drop-in ready React TSX. MUST include all necessary imports.
-- Rely strictly on Tailwind CSS, Framer Motion, and \`lucide-react\` icons.
-- DO NOT wrap the output in markdown fences. DO NOT write setup boilerplate.
-- The output must be a single, production-ready Artifact.`;
 
 // ── UTILITIES ────────────────────────────────────────
 const ioMutex = new class {
@@ -626,45 +604,246 @@ function setupMiddleware(app: express.Express) {
 
 function setupAiRoutes(app: express.Express) {
   app.post('/api/chat', asyncHandler(async (req: any, res: any) => {
+    // ── GATEWAY AUTHORIZATION ──
     const principal = req.principal; 
-    const { messages } = req.body;
-    let systemInstruction = SYSTEM_PROMPT;
+    
+    // Shield boundary at the endpoint level
+    if (typeof (governanceService as any).can === 'function' && !(governanceService as any).can(principal, 'execute:ai_chat')) {
+      AppLogger.warn('Principal blocked at Gateway. Missing execute:ai_chat role.', { principalId: principal.principal_id, roles: principal.roles?.join(',') || 'none', traceId: req.traceId });
+      return res.status(403).json({ error: "Principal does not have 'execute:ai_chat' grant." });
+    } else if (typeof (governanceService as any).can !== 'function') {
+        // Fallback check if 'can' method is missing during structural updates
+        if (!principal.roles || (!principal.roles.includes('system') && !principal.roles.includes('execute:ai_chat'))) {
+             AppLogger.warn('Principal blocked at Gateway (Fallback check).', { principalId: principal.principal_id, traceId: req.traceId });
+             return res.status(403).json({ error: "Principal lacks authorization." });
+        }
+    }
 
+    const { messages, mode, groundingUrls } = ChatRequestSchema.parse(req.body);
+    let resolvedMode: string = mode;
+
+    const userInput = messages[messages.length - 1]?.content || '';
+    if (!userInput || userInput.trim().length === 0) {
+      return res.status(400).json({ error: "missing_user_input", message: "Build loop requires explicit user input." });
+    }
+
+    AppLogger.info('Chat Request Initialized', { requestedMode: mode, resolvedMode, traceId: req.traceId, principalId: principal.principal_id });
+
+    // ── AUTONOMOUS URL PERCEPTION & GROUNDING ──
+    const { contextText, urls: processedUrls } = await perceptionEngine.processGroundingContext(userInput, groundingUrls || [], req.traceId);
+    let systemInstruction = ORCHESTRATOR_PROMPT;
+
+    if (contextText) {
+      systemInstruction += contextText;
+    }
+
+    // Sanitize input format for Gemini SDK
+    const contents = messages.map((m: any) => {
+      const parts = [];
+      if (m.functionCall) parts.push({ functionCall: m.functionCall });
+      if (m.functionResponse) parts.push({ functionResponse: m.functionResponse });
+      if (m.attachments?.length > 0) {
+        parts.push(...m.attachments.map((a: any) => {
+          const pureBase64 = a.data.includes(',') ? a.data.split(',')[1] : a.data;
+          return { inlineData: { mimeType: a.mimeType, data: pureBase64 } };
+        }));
+      }
+      if (m.content) parts.push({ text: m.content });
+      if (parts.length === 0) parts.push({ text: ' ' }); // Fallback
+      return { role: m.role, parts };
+    });
+
+    const recentEntities = await entityRegistry.query({ limit: 10 });
+    if (recentEntities.length > 0) {
+      systemInstruction += '\n\nRECENT ENTITIES (Reference their canonical aura:// URI):\n';
+      systemInstruction += recentEntities.map(e => `- [${e.type}] ${e.uri}`).join('\n');
+    }
+
+    const repoContext = (req.body as any).repoContext;
+    if (repoContext && repoContext.repo) {
+      systemInstruction += `\n\nCONNECTED REPOSITORY: ${repoContext.repo} (branch: ${repoContext.branch || 'main'})\n`;
+      if (repoContext.tree && Array.isArray(repoContext.tree)) {
+        systemInstruction += `\nFILE TREE (${repoContext.tree.length} files):\n`;
+        systemInstruction += repoContext.tree.map((f: any) => `- ${f.path} (${f.size || '?'}b)`).join('\n');
+      }
+      systemInstruction += `\nYou are connected to this repository. You can read files, analyze code, and make changes using the propose_codebase_modification tool.`;
+    }
+
+    let temperature = 0.5;
+
+    // Explicit Cognitive Overrides
+    const isComplex = ['research', 'coding', 'design', 'build', 'artifact'].includes(resolvedMode);
+    
+    switch (resolvedMode) {
+      case 'research': systemInstruction += '\n\nMODE: RESEARCH — Conduct structural multi-source investigation.'; temperature = 0.3; break;
+      case 'design': systemInstruction += '\n\n' + DESIGN_SPECIALIST; temperature = 0.2; break;
+      case 'coding': systemInstruction += '\n\n' + CODE_SPECIALIST; temperature = 0.2; break;
+      case 'artifact': temperature = 1.0; break;
+    }
+
+    // ── Primary ADK Orchestrator ──
     const chatConfig: any = { 
       systemInstruction, 
-      temperature: 0.5, 
+      temperature, 
+      thinkingConfig: { thinkingBudget: 8192 } 
     };
 
+    const useTools = ['chat', 'search', 'artifact', 'build', 'design', 'research'].includes(resolvedMode);
+    if (useTools) {
+      chatConfig.tools = [...ADK_TOOLS];
+      if (resolvedMode === 'search') chatConfig.tools.push({ googleSearch: {} } as any);
+    }
+
+    if (resolvedMode === 'build') {
+      chatConfig.toolConfig = { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['propose_codebase_modification'] } };
+    } else if (resolvedMode === 'artifact' || resolvedMode === 'design') {
+      chatConfig.toolConfig = { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['generate_react_app'] } };
+    } else {
+      chatConfig.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+    }
+
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.write(' ');
 
-    let currentMessages = [...messages.slice(0, -1), messages[messages.length - 1]].map((m: any) => ({
-       role: m.role,
-       parts: [{ text: m.content || " " }]
-    }));
+    let clientDisconnected = false;
+    res.on('close', () => { clientDisconnected = true; });
 
-    try {
-      const chat = ai.chats.create({
-        model: 'gemini-2.5-flash',
-        config: chatConfig,
-        history: currentMessages.slice(0, -1)
-      });
-
-      const responseStream = await chat.sendMessageStream({ message: currentMessages[currentMessages.length - 1].parts });
-      
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          res.write(chunk.text);
+    // ── DYNAMIC RETRY BUDGET (THE HEALING LOOP LIMIT) ──
+    const getRetryBudget = (p: GovernancePrincipal & { tier?: string }, mode: string) => {
+        if (p.tier === 'enterprise' || p.roles?.includes('premium_tier') || p.roles?.includes('global_administrator') || p.roles?.includes('system')) {
+            return 3;
         }
+        return isComplex ? 2 : 1; 
+    };
+    
+    let maxRetries = getRetryBudget(principal, resolvedMode);
+    let currentMessages = [...contents.slice(0, -1), contents[contents.length - 1]];
+
+    const targetModel = isComplex ? MODEL_ROUTING.reasoning : MODEL_ROUTING.fast;
+
+    while (maxRetries >= 0) {
+      try {
+        let chat;
+        try {
+          chat = ai.chats.create({
+            model: targetModel,
+            config: chatConfig,
+            history: currentMessages.slice(0, -1)
+          });
+        } catch (initErr) {
+           AppLogger.warn(`Primary model ${targetModel} unavailable, falling back`, { traceId: req.traceId, principalId: principal.principal_id });
+           chat = ai.chats.create({
+             model: isComplex ? MODEL_ROUTING.fallback_reasoning : MODEL_ROUTING.fallback_fast,
+             config: chatConfig,
+             history: currentMessages.slice(0, -1)
+           });
+        }
+
+        const stream = await chat.sendMessageStream({ message: currentMessages[currentMessages.length - 1].parts });
+        
+        let streamedResponse = '';
+        let isDelegated = false;
+        let retryTriggered = false;
+
+        for await (const chunk of stream) {
+          if (clientDisconnected || res.writableEnded) break;
+
+          // ── THE AUTONOMOUS HEALING EXECUTION BOUNDARY ──
+          if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+            for (const call of chunk.functionCalls) {
+              AppLogger.info(`[adk.orchestrator] Native Tool Invocation: ${call.name}`, { traceId: req.traceId, principalId: principal.principal_id });
+
+              const schema = ADK_PAYLOAD_SCHEMAS[call.name as keyof typeof ADK_PAYLOAD_SCHEMAS];
+              let pristineArgs: any;
+
+              if (schema) {
+                // THE GATEKEEPER WALL
+                const validation = schema.safeParse(call.args);
+                
+                if (!validation.success) {
+                  // INSTRUMENT FAILURE
+                  const errorContext = validation.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(' | ');
+                  AppLogger.warn(`[adk.boundary_rejection] Schema violation on ${call.name}`, { traceId: req.traceId, errors: errorContext, principalId: principal.principal_id });
+                  
+                  bqTelemetry.streamTelemetryEvent('LLM_SCHEMA_VIOLATION', {
+                    traceId: req.traceId,
+                    principal_id: principal.principal_id,
+                    tool_name: call.name,
+                    attempted_payload: JSON.stringify(call.args),
+                    violations: errorContext
+                  }).catch(() => {});
+
+                  if (maxRetries > 0) {
+                    // THE SELF-HEALING LOOP
+                    maxRetries--;
+                    currentMessages.push({ role: 'model', parts: [{ functionCall: call }] });
+                    currentMessages.push({ 
+                      role: 'user', 
+                      parts: [{ 
+                        functionResponse: {
+                          name: call.name,
+                          response: {
+                            error: "SCHEMA_VALIDATION_FAILED",
+                            details: errorContext,
+                            instruction: "Correct your JSON payload to match the exact schema requirements and call the function again. Do NOT invent strings for Enums."
+                          }
+                        }
+                      }]
+                    });
+                    retryTriggered = true;
+                    break; 
+                  } else {
+                     res.write(`\n\n> [!WARNING]\n> **System Execution Blocked**\n> The intelligence engine generated a malformed canonical payload for \`${call.name}\`. Execution intercepted by security boundary.\n`);
+                     isDelegated = true;
+                     break;
+                  }
+                }
+                pristineArgs = validation.data;
+              } else {
+                pristineArgs = call.args; 
+              }
+
+              if (retryTriggered) break;
+
+              // ── PRISTINE O/C TYPE-SAFE DISPATCH ──
+              try {
+                const handler = ADK_DISPATCHER[call.name as keyof typeof ADK_DISPATCHER];
+                if (handler) {
+                  isDelegated = await handler(res, pristineArgs, principal, userInput, req);
+                } else {
+                  AppLogger.warn(`[adk.orchestrator] Unknown function call: ${call.name}`, { traceId: req.traceId, principalId: principal.principal_id });
+                }
+              } catch (subErr: any) {
+                AppLogger.error(`[adk.orchestrator] Agent execution failed: ${call.name}`, subErr, { traceId: req.traceId, principalId: principal.principal_id });
+                res.write(`\n\n> [!WARNING]\n> **Agent Delegation Failed**\n> Sub-Agent: \`${call.name}\`\n> Fault: ${subErr.message}\n`);
+              }
+            }
+            if (retryTriggered || isDelegated) break; 
+          }
+
+          if (chunk.text && !isDelegated && !retryTriggered) {
+            res.write(chunk.text);
+            streamedResponse += chunk.text;
+          }
+        }
+
+        if (retryTriggered) continue; // Loop again and let LLM heal itself
+        
+        if (streamedResponse.includes('[AURA_')) {
+          entityRegistry.extractAndRegister(streamedResponse).catch(() => { });
+        }
+        
+        if (!res.writableEnded) res.end();
+        break; // Exit while loop naturally
+
+      } catch (err: any) {
+        AppLogger.error('Vertex AI Stream Rupture', err, { traceId: req.traceId, principalId: principal.principal_id });
+        if (!res.headersSent) res.status(502).json({ error: 'Upstream AI provider connection failed' });
+        else res.end('\n\n[SYSTEM FAULT: Stream unexpectedly terminated by backend policy.]');
+        break;
       }
-
-      if (!res.writableEnded) res.end();
-
-    } catch (err: any) {
-      AppLogger.error('Vertex AI Stream Rupture', err, { traceId: req.traceId, principalId: principal.principal_id });
-      if (!res.headersSent) res.status(502).json({ error: 'Upstream AI provider connection failed' });
-      else res.end('\n\n[SYSTEM FAULT: Stream unexpectedly terminated by backend policy.]');
     }
   }));
 }
@@ -702,6 +881,10 @@ async function startServer() {
   });
 
   setupMiddleware(app);
+  
+  const { chronosRouter } = await import('./src/services/automation-runner/index.ts');
+  app.use(chronosRouter);
+
   setupWebhookRoutes(app);
   setupAiRoutes(app);
   setupAuthRoutes(app, { bqTelemetry });

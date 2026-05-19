@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Activity, Briefcase, Coins, LineChart, Music, Mail } from 'lucide-react';
+import { Activity, Briefcase, Coins, LineChart, Music, Mail, Trash2, RefreshCw, CheckCircle2, ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
+import { listMessages, trashMessage, untrashMessage } from '../services/gmail';
 
 interface ArtifactBlock {
   type: 'sports' | 'crypto' | 'markets' | 'work' | 'music' | 'code' | 'emails' | 'unknown';
@@ -13,6 +14,14 @@ interface ArtifactRendererProps {
 }
 
 export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteComplete, setDeleteComplete] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreComplete, setRestoreComplete] = useState(false);
+  const [restoreError, setRestoreError] = useState('');
+
   const isCode = artifact.type === 'code';
   const isEmails = artifact.type === 'emails' || 
     (Array.isArray(artifact.payload?.data) && artifact.payload.data.length > 0 && artifact.payload.data[0].subject !== undefined);
@@ -29,6 +38,96 @@ export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
   };
 
   const Icon = Icons[artifact.type] || Icons.unknown;
+
+  const [deletePreviews, setDeletePreviews] = useState<any[]>([]);
+  const [deletePreviewsLoading, setDeletePreviewsLoading] = useState(false);
+
+  useEffect(() => {
+    if (artifact.payload?.delete_emails_query && Array.isArray(artifact.payload.delete_emails_query)) {
+      const fetchPreviews = async () => {
+        setDeletePreviewsLoading(true);
+        try {
+           const allEmails: any[] = [];
+           for (const query of artifact.payload!.delete_emails_query) {
+              const matched = await listMessages(query, 3); // fetch up to 3 previews for query
+              allEmails.push(...matched);
+           }
+           setDeletePreviews(allEmails);
+        } catch (e) {
+           console.error("Preview fetch error", e);
+        } finally {
+           setDeletePreviewsLoading(false);
+        }
+      };
+      fetchPreviews();
+    }
+  }, [artifact.payload?.delete_emails_query]);
+
+  const [restorePreviews, setRestorePreviews] = useState<any[]>([]);
+  const [restorePreviewsLoading, setRestorePreviewsLoading] = useState(false);
+
+  useEffect(() => {
+    if (artifact.payload?.restore_emails_query && Array.isArray(artifact.payload.restore_emails_query)) {
+      const fetchPreviews = async () => {
+        setRestorePreviewsLoading(true);
+        try {
+           const allEmails: any[] = [];
+           for (const query of artifact.payload!.restore_emails_query) {
+              const matched = await listMessages(query + ' in:trash', 3);
+              allEmails.push(...matched);
+           }
+           setRestorePreviews(allEmails);
+        } catch (e) {
+           console.error("Preview fetch error", e);
+        } finally {
+           setRestorePreviewsLoading(false);
+        }
+      };
+      fetchPreviews();
+    }
+  }, [artifact.payload?.restore_emails_query]);
+
+  const executeDeleteEmails = async () => {
+    if (!artifact.payload?.delete_emails_query) return;
+    setIsDeleting(true);
+    setDeleteError('');
+    try {
+      for (const query of artifact.payload.delete_emails_query) {
+        const messagesToDelete = await listMessages(query, 50);
+        for (const msg of messagesToDelete) {
+          await trashMessage(msg.id);
+        }
+      }
+      setDeleteComplete(true);
+      window.dispatchEvent(new CustomEvent('refresh-workspace-gmail'));
+    } catch (err: any) {
+      console.error('Mass delete failed:', err);
+      setDeleteError(err.message || 'Mass deletion failed.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const executeRestoreEmails = async () => {
+    if (!artifact.payload?.restore_emails_query) return;
+    setIsRestoring(true);
+    setRestoreError('');
+    try {
+      for (const query of artifact.payload.restore_emails_query) {
+        const messagesToRestore = await listMessages(query + ' in:trash', 50);
+        for (const msg of messagesToRestore) {
+          await untrashMessage(msg.id);
+        }
+      }
+      setRestoreComplete(true);
+      window.dispatchEvent(new CustomEvent('refresh-workspace-gmail'));
+    } catch (err: any) {
+      console.error('Mass restore failed:', err);
+      setRestoreError(err.message || 'Mass restore failed.');
+    } finally {
+      setIsRestoring(false);
+    }
+  };
 
   if (isCode) {
     return (
@@ -100,12 +199,29 @@ export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
                 
                 <p className="text-[14px] text-white/60 leading-[1.7] font-light mt-1">{item.snippet || 'Unavailable'}</p>
                 
-                {item.action && (
-                  <div className="mt-3 flex items-start gap-3 bg-[#111111] border border-white/[0.05] rounded-[12px] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] group-hover:border-white/[0.08] transition-colors">
-                     <div className="w-1.5 h-1.5 rounded-full bg-white mt-1.5 shrink-0 opacity-80 shadow-[0_0_8px_rgba(255,255,255,0.6)]" />
-                    <span className="text-[13px] font-medium text-white/80 leading-relaxed">{item.action}</span>
+                <div className="mt-3 flex flex-col gap-3">
+                  {item.action && (
+                    <div className="flex items-start gap-3 bg-[#111111] border border-white/[0.05] rounded-[12px] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] group-hover:border-white/[0.08] transition-colors">
+                       <div className="w-1.5 h-1.5 rounded-full bg-white mt-1.5 shrink-0 opacity-80 shadow-[0_0_8px_rgba(255,255,255,0.6)]" />
+                      <span className="text-[13px] font-medium text-white/80 leading-relaxed">{item.action}</span>
+                    </div>
+                  )}
+                  
+                  <div className="flex flex-wrap items-center gap-2">
+                    {item.action_url && (
+                      <a href={item.action_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[12px] font-medium transition-colors">
+                        <ExternalLink className="w-3 h-3" />
+                        Open Link
+                      </a>
+                    )}
+                    {item.id && (
+                      <a href={`https://mail.google.com/mail/u/0/#all/${item.id}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 hover:border-indigo-500/50 text-indigo-300 text-[12px] font-medium transition-colors">
+                        <Mail className="w-3 h-3" />
+                        Open in Gmail
+                      </a>
+                    )}
                   </div>
-                )}
+                </div>
                 
                 {item.id && (
                   <div className="mt-2 text-[9px] font-mono text-white/10 uppercase tracking-[0.2em] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5">
@@ -246,6 +362,136 @@ export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
                </div>
             )}
 
+            {artifact.payload?.delete_emails_query && Array.isArray(artifact.payload.delete_emails_query) && artifact.payload.delete_emails_query.length > 0 && (
+               <div className="flex flex-col gap-3">
+                 <h4 className="text-[10px] font-semibold text-rose-400/80 uppercase tracking-[0.2em] ml-1">Email Cleanup</h4>
+                 <div className="flex flex-col gap-4 p-5 rounded-xl bg-rose-900/10 border border-rose-500/20">
+                   <div className="flex items-center gap-3">
+                     <Mail className="w-4 h-4 text-rose-400" />
+                     <span className="text-[14px] font-medium text-white/90">
+                       {deleteComplete ? 'Emails Deleted' : isDeleting ? 'Deleting...' : 'Requires Confirmation'}
+                     </span>
+                   </div>
+                   <div className="text-[13px] text-white/70">
+                     <div className="mb-2">Matched query:</div>
+                     <ul className="list-disc ml-5 mb-4 text-rose-200/80 text-[12px] font-mono">
+                        {artifact.payload.delete_emails_query.map((q: string, i: number) => <li key={i}>{q}</li>)}
+                     </ul>
+                     
+                     {deletePreviewsLoading ? (
+                       <div className="text-white/40 text-[12px] flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin"/> Loading preview...</div>
+                     ) : deletePreviews.length > 0 ? (
+                       <div className="flex flex-col gap-2 mt-2">
+                         <div className="text-[12px] font-medium text-white/50 uppercase tracking-widest border-b border-white/5 pb-2 mb-1">Impact Preview</div>
+                         {deletePreviews.map((msg: any) => {
+                           const subject = msg.payload?.headers?.find((h: any) => h.name === 'Subject')?.value || 'No Subject';
+                           const from = msg.payload?.headers?.find((h: any) => h.name === 'From')?.value || 'Unknown';
+                           const fromNameMatch = from.match(/^"?([^"<]+)"?\s*</);
+                           const fromName = fromNameMatch ? fromNameMatch[1].trim() : from;
+                           return (
+                             <div key={msg.id} className="text-[13px] text-white/80 bg-black/20 p-2 rounded-lg border border-white/5 truncate">
+                               <span className="font-medium">{fromName}</span> <span className="text-white/40 mx-1">—</span> <span className="text-white/60">{subject}</span>
+                             </div>
+                           )
+                         })}
+                         <div className="text-[11px] text-rose-300/60 mt-1 italic">*Plus any other emails matching this exact criteria.</div>
+                       </div>
+                     ) : (
+                       <div className="text-rose-400/60 text-[12px] italic">No emails found for this query.</div>
+                     )}
+                   </div>
+                   
+                   {!deleteComplete ? (
+                     <div className="flex items-center gap-3 mt-2">
+                       <button
+                         onClick={executeDeleteEmails}
+                         disabled={isDeleting || (deletePreviews.length === 0 && !deletePreviewsLoading)}
+                         className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-medium transition-all ${isDeleting || (deletePreviews.length === 0 && !deletePreviewsLoading) ? 'bg-rose-500/30 text-white/30 cursor-not-allowed' : 'bg-rose-500 hover:bg-rose-600 text-white shadow-sm shadow-rose-900'}`}
+                       >
+                         {isDeleting ? (
+                           <>
+                             <RefreshCw className="w-4 h-4 animate-spin" />
+                             Deleting...
+                           </>
+                         ) : (
+                           <>
+                             <Trash2 className="w-4 h-4" />
+                             Confirm Delete
+                           </>
+                         )}
+                       </button>
+                       {deleteError && <span className="text-rose-400 text-[12px]">{deleteError}</span>}
+                     </div>
+                   ) : null}
+                 </div>
+               </div>
+            )}
+
+            {artifact.payload?.restore_emails_query && Array.isArray(artifact.payload.restore_emails_query) && artifact.payload.restore_emails_query.length > 0 && (
+               <div className="flex flex-col gap-3">
+                 <h4 className="text-[10px] font-semibold text-emerald-400/80 uppercase tracking-[0.2em] ml-1">Email Recovery</h4>
+                 <div className="flex flex-col gap-4 p-5 rounded-xl bg-emerald-900/10 border border-emerald-500/20">
+                   <div className="flex items-center gap-3">
+                     <Mail className="w-4 h-4 text-emerald-400" />
+                     <span className="text-[14px] font-medium text-white/90">
+                       {restoreComplete ? 'Emails Restored' : isRestoring ? 'Restoring...' : 'Requires Confirmation'}
+                     </span>
+                   </div>
+                   <div className="text-[13px] text-white/70">
+                     <div className="mb-2">Matched query in trash:</div>
+                     <ul className="list-disc ml-5 mb-4 text-emerald-200/80 text-[12px] font-mono">
+                        {artifact.payload.restore_emails_query.map((q: string, i: number) => <li key={i}>{q}</li>)}
+                     </ul>
+                     
+                     {restorePreviewsLoading ? (
+                       <div className="text-white/40 text-[12px] flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin"/> Loading preview...</div>
+                     ) : restorePreviews.length > 0 ? (
+                       <div className="flex flex-col gap-2 mt-2">
+                         <div className="text-[12px] font-medium text-white/50 uppercase tracking-widest border-b border-white/5 pb-2 mb-1">Impact Preview</div>
+                         {restorePreviews.map((msg: any) => {
+                           const subject = msg.payload?.headers?.find((h: any) => h.name === 'Subject')?.value || 'No Subject';
+                           const from = msg.payload?.headers?.find((h: any) => h.name === 'From')?.value || 'Unknown';
+                           const fromNameMatch = from.match(/^"?([^"<]+)"?\s*</);
+                           const fromName = fromNameMatch ? fromNameMatch[1].trim() : from;
+                           return (
+                             <div key={msg.id} className="text-[13px] text-white/80 bg-black/20 p-2 rounded-lg border border-white/5 truncate">
+                               <span className="font-medium">{fromName}</span> <span className="text-white/40 mx-1">—</span> <span className="text-white/60">{subject}</span>
+                             </div>
+                           )
+                         })}
+                         <div className="text-[11px] text-emerald-300/60 mt-1 italic">*Plus any other emails matching this exact criteria.</div>
+                       </div>
+                     ) : (
+                       <div className="text-emerald-400/60 text-[12px] italic">No emails found for this query in the trash.</div>
+                     )}
+                   </div>
+                   
+                   {!restoreComplete ? (
+                     <div className="flex items-center gap-3 mt-2">
+                       <button
+                         onClick={executeRestoreEmails}
+                         disabled={isRestoring || (restorePreviews.length === 0 && !restorePreviewsLoading)}
+                         className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-medium transition-all ${isRestoring || (restorePreviews.length === 0 && !restorePreviewsLoading) ? 'bg-emerald-500/30 text-white/30 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm shadow-emerald-900'}`}
+                       >
+                         {isRestoring ? (
+                           <>
+                             <RefreshCw className="w-4 h-4 animate-spin" />
+                             Restoring...
+                           </>
+                         ) : (
+                           <>
+                             <RefreshCw className="w-4 h-4" />
+                             Confirm Restore
+                           </>
+                         )}
+                       </button>
+                       {restoreError && <span className="text-rose-400 text-[12px]">{restoreError}</span>}
+                     </div>
+                   ) : null}
+                 </div>
+               </div>
+            )}
+
             {Array.isArray(data) && data.length > 0 && (
               <div className="flex flex-col gap-2">
                 {data.map((item: any, idx: number) => (
@@ -259,7 +505,7 @@ export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
               </div>
             )}
 
-            {(!data || data.length === 0) && !artifact.payload?.summary && !artifact.payload?.action_items && !artifact.payload?.next_steps && !artifact.payload?.create_tasks && !artifact.payload?.create_drafts && !artifact.payload?.create_docs && !artifact.payload?.create_sheets && (
+            {(!data || data.length === 0) && !artifact.payload?.summary && !artifact.payload?.action_items && !artifact.payload?.next_steps && !artifact.payload?.create_tasks && !artifact.payload?.create_drafts && !artifact.payload?.create_docs && !artifact.payload?.create_sheets && !artifact.payload?.delete_emails_query && !artifact.payload?.restore_emails_query && (
               <div className="p-4 rounded-xl bg-black/40 text-xs text-white/50 font-mono overflow-auto border border-white/5 shadow-[inset_0_2px_10px_rgba(0,0,0,0.5)]">
                 {JSON.stringify(artifact.payload, null, 2)}
               </div>
