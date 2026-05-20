@@ -74,7 +74,11 @@ export class CloudDeploymentPipeline {
           try {
             const auth = new google.auth.OAuth2();
             auth.setCredentials({ access_token: token });
-            const run = google.run('v1');
+            const region = process.env.GOOGLE_CLOUD_REGION || 'us-central1';
+            const run = google.run({
+              version: 'v1',
+              rootUrl: `https://${region}-run.googleapis.com`
+            });
             const projectId = process.env.GOOGLE_CLOUD_PROJECT || 'aura-production';
             const response = await run.namespaces.services.get({
               name: `namespaces/${projectId}/services/${serviceId}`,
