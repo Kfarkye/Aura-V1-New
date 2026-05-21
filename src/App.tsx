@@ -6,6 +6,7 @@ import { MessageRenderer } from "./components/MessageRenderer";
 import { WorkspaceDashboard } from "./components/WorkspaceDashboard";
 import { DriveFilePickerModal } from "./components/DrivePickerModal";
 import { McpGenerator } from "./components/McpGenerator";
+import { ConnectorManager } from "./components/ConnectorManager";
 import { SyncProvider } from "./contexts/SyncContext";
 import { initAuth, googleSignIn, logout } from "./services/auth";
 import {
@@ -622,7 +623,7 @@ Expand this context into a fully structured, professional document (e.g. executi
               Perspective
             </h3>
             <div className="flex flex-col space-y-1 px-3">
-              {["Chat", "Research", "Workspace", "Maps", "MCP Generator"].map(
+              {["Chat", "Research", "Workspace", "Maps", "MCP Generator", "Connectors"].map(
                 (item) => {
                   const isActive = activeTab === item;
                   return (
@@ -744,6 +745,8 @@ Expand this context into a fully structured, professional document (e.g. executi
               )
             ) : activeTab === "MCP Generator" ? (
               <McpGenerator />
+            ) : activeTab === "Connectors" ? (
+              <ConnectorManager />
             ) : (
               <div className="flex items-center justify-center h-full text-white/40">
                 {activeTab} is currently under construction.
@@ -753,7 +756,7 @@ Expand this context into a fully structured, professional document (e.g. executi
         )}
 
         {/* Persistent Chat Area */}
-        {activeTab !== "MCP Generator" && (
+        {activeTab !== "MCP Generator" && activeTab !== "Connectors" && (
           <div
             className={`${activeTab === "Chat" || activeTab === "Aura OS" ? "flex" : "hidden md:flex"} flex-col relative overflow-hidden bg-[#030303] transition-all duration-300 pwa-non-drag ${
               activeTab === "Chat" || activeTab === "Aura OS"
