@@ -1,5 +1,3 @@
-import type { GeneratedFile } from "../../types/aura";
-
 export function buildGenerateMcpPayload(params: {
   specUrl?: string;
   specContent?: string;
@@ -78,20 +76,11 @@ export function buildRegistryEntry(params: {
 
 export function buildAssistantChatPayload(params: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
-  vault: Record<string, unknown>;
+  context: Record<string, unknown>;
 }) {
-  const vaultData = Object.keys(params.vault).reduce((acc, key) => {
-    const value = params.vault[key];
-    acc[key] = {
-      credential_present: value !== undefined && value !== null && value !== "" && value !== "[MISSING]",
-      vault_reference: value === "[SECURE_VAULT_REFERENCE]" ? "[SECURE_VAULT_REFERENCE]" : undefined,
-    };
-    return acc;
-  }, {} as Record<string, { credential_present: boolean; vault_reference?: "[SECURE_VAULT_REFERENCE]" }>);
-
   return {
     messages: params.messages,
-    vaultData,
+    context: params.context,
   };
 }
 
@@ -109,12 +98,10 @@ export function buildSearchDocsPayload(params: { query: string }) {
 
 export function buildGithubSavePayload(params: {
   targetName: string;
-  files: GeneratedFile[];
-  githubToken: string;
+  files: Array<{ path: string; content: string }>;
 }) {
   return {
     targetName: params.targetName,
     files: params.files,
-    githubToken: params.githubToken,
   };
 }
