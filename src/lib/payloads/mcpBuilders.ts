@@ -1,15 +1,32 @@
-export function buildGenerateMcpPayload(params: { specUrl?: string; specContent?: string; name: string; options: any; governanceRules?: any; targetArtifact?: string }) {
+import type { GeneratedFile } from "../../types/aura";
+
+export function buildGenerateMcpPayload(params: {
+  specUrl?: string;
+  specContent?: string;
+  name: string;
+  options: Record<string, unknown>;
+  governanceRules?: unknown;
+  targetArtifact?: string;
+}) {
   return {
     specUrl: params.specUrl,
     specContent: params.specContent,
     name: params.name,
     options: params.options,
     governanceRules: params.governanceRules,
-    targetArtifact: params.targetArtifact
+    targetArtifact: params.targetArtifact,
   };
 }
 
-export function buildDeployPreviewPayload(params: { targetName: string; targetRuntime: string; governanceRules: any; options: any; environment?: string; files?: any[]; summary?: string }) {
+export function buildDeployPreviewPayload(params: {
+  targetName: string;
+  targetRuntime: string;
+  governanceRules: unknown;
+  options: Record<string, unknown>;
+  environment?: "preview" | "production" | string;
+  files?: string[];
+  summary?: string;
+}) {
   return {
     targetName: params.targetName,
     targetRuntime: params.targetRuntime,
@@ -17,40 +34,87 @@ export function buildDeployPreviewPayload(params: { targetName: string; targetRu
     options: params.options,
     environment: params.environment || "preview",
     files: params.files || [],
-    summary: params.summary || "AURA Cloud Deploy"
+    summary: params.summary || "AURA Cloud Deploy",
   };
 }
 
-export function buildSandboxRunPayload(params: { name: string; targetArtifact: string }) {
+export function buildSandboxRunPayload(params: {
+  targetName: string;
+  action: "diagnostics" | "list_tools" | "smoke_test" | string;
+  files: string[];
+}) {
   return {
-    name: params.name,
-    targetArtifact: params.targetArtifact
+    targetName: params.targetName,
+    action: params.action,
+    files: params.files,
   };
 }
 
-export function buildRegistryEntry(params: { name: string; description: string; status: string; endpoint: string; deployment_mode: string; runtime: string; source_receipt_id?: string; updated_at?: string }) {
+export function buildRegistryEntry(params: {
+  name: string;
+  description: string;
+  status: string;
+  endpoint?: string;
+  deployment_mode: string;
+  runtime: string;
+  source_receipt_id?: string;
+  updated_at?: string;
+  source_repo?: string;
+  commit_sha?: string;
+}) {
   return {
     name: params.name,
     description: params.description,
     status: params.status,
-    endpoint: params.endpoint,
+    endpoint: params.endpoint || "",
     deployment_mode: params.deployment_mode,
     runtime: params.runtime,
-    source_receipt_id: params.source_receipt_id || "null",
-    updated_at: params.updated_at || new Date().toISOString()
+    source_receipt_id: params.source_receipt_id,
+    updated_at: params.updated_at || new Date().toISOString(),
+    source_repo: params.source_repo,
+    commit_sha: params.commit_sha,
   };
 }
 
-export function buildAssistantChatPayload(params: { messages: any[]; vault: Record<string, string> }) {
-  // Sanitize Vault: only return keys and presence, not raw values
-  // unless explicitly requested by the backend for execution context.
-  const sanitizedVault = Object.keys(params.vault).reduce((acc, key) => {
-    acc[key] = { credential_present: !!params.vault[key] };
+export function buildAssistantChatPayload(params: {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  vault: Record<string, unknown>;
+}) {
+  const vaultData = Object.keys(params.vault).reduce((acc, key) => {
+    const value = params.vault[key];
+    acc[key] = {
+      credential_present: value !== undefined && value !== null && value !== "" && value !== "[MISSING]",
+      vault_reference: value === "[SECURE_VAULT_REFERENCE]" ? "[SECURE_VAULT_REFERENCE]" : undefined,
+    };
     return acc;
-  }, {} as Record<string, { credential_present: boolean }>);
+  }, {} as Record<string, { credential_present: boolean; vault_reference?: "[SECURE_VAULT_REFERENCE]" }>);
 
   return {
     messages: params.messages,
-    vaultData: sanitizedVault // Safe mapping
+    vaultData,
+  };
+}
+
+export function buildIndexDocsPayload(params: { directory: string }) {
+  return {
+    directory: params.directory,
+  };
+}
+
+export function buildSearchDocsPayload(params: { query: string }) {
+  return {
+    query: params.query,
+  };
+}
+
+export function buildGithubSavePayload(params: {
+  targetName: string;
+  files: GeneratedFile[];
+  githubToken: string;
+}) {
+  return {
+    targetName: params.targetName,
+    files: params.files,
+    githubToken: params.githubToken,
   };
 }
