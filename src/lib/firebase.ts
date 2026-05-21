@@ -13,24 +13,13 @@
 
 import { initializeApp, getApps, getApp, type FirebaseApp } from 'firebase/app';
 
-const getEnv = (key: string): string | undefined => {
-  if (typeof process !== 'undefined' && process.env && process.env[key]) {
-    return process.env[key];
-  }
-  try {
-    return (import.meta as any).env?.[key];
-  } catch {
-    return undefined;
-  }
-};
-
 const firebaseConfig = {
-  apiKey: getEnv('VITE_FIREBASE_API_KEY') || 'AIzaSyB8TsMnLCWSSFf84T9eXNDx9nRUG_EH_Fg',
-  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN') || 'gen-lang-client-0281999829.firebaseapp.com',
-  projectId: getEnv('VITE_FIREBASE_PROJECT_ID') || 'gen-lang-client-0281999829',
-  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET') || 'gen-lang-client-0281999829.firebasestorage.app',
-  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID') || '70323048967',
-  appId: getEnv('VITE_FIREBASE_APP_ID') || '1:70323048967:web:066a132c4d3c88e09550a2',
+  apiKey: (import.meta as any).env.VITE_FIREBASE_API_KEY || 'AIzaSyB8TsMnLCWSSFf84T9eXNDx9nRUG_EH_Fg',
+  authDomain: (import.meta as any).env.VITE_FIREBASE_AUTH_DOMAIN || 'gen-lang-client-0281999829.firebaseapp.com',
+  projectId: (import.meta as any).env.VITE_FIREBASE_PROJECT_ID || 'gen-lang-client-0281999829',
+  storageBucket: (import.meta as any).env.VITE_FIREBASE_STORAGE_BUCKET || 'gen-lang-client-0281999829.firebasestorage.app',
+  messagingSenderId: (import.meta as any).env.VITE_FIREBASE_MESSAGING_SENDER_ID || '70323048967',
+  appId: (import.meta as any).env.VITE_FIREBASE_APP_ID || '1:70323048967:web:066a132c4d3c88e09550a2',
 };
 
 export const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -62,7 +51,7 @@ export async function getFirebaseDb(): Promise<import('firebase/firestore').Fire
   return dbPromise;
 }
 
-const recaptchaSiteKey = getEnv('VITE_RECAPTCHA_ENTERPRISE_SITE_KEY');
+const recaptchaSiteKey = (import.meta as any).env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY;
 if (recaptchaSiteKey && typeof window !== 'undefined') {
   import('firebase/app-check')
     .then(({ initializeAppCheck, ReCaptchaEnterpriseProvider }) => {

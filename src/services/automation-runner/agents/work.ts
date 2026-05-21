@@ -22,7 +22,13 @@ const InboxSummarySchema = z.object({
 });
 
 export class HeadlessWorkAgent {
-  private ai = new GoogleGenAI({ project: process.env.GOOGLE_CLOUD_PROJECT });
+  private ai = (() => {
+    const project = process.env.GOOGLE_CLOUD_PROJECT;
+    if (project && project !== 'gen-lang-client-0281999829') {
+      return new GoogleGenAI({ enterprise: true, project, location: process.env.GOOGLE_CLOUD_LOCATION || 'us-west2' });
+    }
+    return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || 'MISSING_API_KEY' });
+  })();
 
   async generateInboxBrief(
     principal: GovernancePrincipal, 

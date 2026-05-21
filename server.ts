@@ -32,14 +32,22 @@ import textToSpeech from '@google-cloud/text-to-speech';
 import { DeployRequestSchema } from './src/lib/schemas.ts';
 import { config } from './src/server/config/env.ts';
 import { initializeSseStream } from './src/utils/sseEmitter.ts';
+import { 
+  ORCHESTRATOR_PROMPT, 
+  SPORTS_SPECIALIST, 
+  WORK_SPECIALIST, 
+  DESIGN_SPECIALIST, 
+  CODE_SPECIALIST,
+  CRYPTO_SPECIALIST,
+  MARKETS_SPECIALIST,
+  MUSIC_SPECIALIST,
+  AUTOMATION_SPECIALIST
+} from './src/server/prompts.ts';
 import { SpannerAuditClient, BigQueryTelemetry, SecretManager, CloudLoggingClient } from './src/infrastructure/gcp/index.ts';
 import { AutonomousHealingEngine, initHealingEngine } from './src/server/healing-engine.ts';
 import { EngineRegistry } from './src/infrastructure/registry/EngineRegistry.ts';
 import { RequestEnvelope, EngineMode, CONTRACT_VERSION, validateResponseEnvelope } from './src/mocks/aura-contracts.ts';
 import { EnterpriseGovernanceService } from './src/mocks/governance.ts';
-import { ArtifactProvisioningPipeline } from './src/server/services/artifact_provisioning_pipeline.ts';
-import { EndpointRegistryService } from './src/server/services/endpoint_registry.ts';
-import { CloudDeploymentPipeline } from './src/server/services/cloud_deployment_pipeline.ts';
 import { FleetManager } from './src/infrastructure/fleet/FleetManager.ts';
 import { buildRagBundle, isRagEnabled, type RagBundle } from './src/lib/ai/rag_bundle.ts';
 import { filterByGlob, chunkSourceFile } from './src/lib/chunking.ts';
@@ -49,6 +57,7 @@ import { toSpannerJson } from './src/lib/gcp/spanner_json.ts';
 import type { FleetCapabilityState } from './src/infrastructure/gcp/InfrastructureAuditor.ts';
 
 import { setupAuthRoutes } from './src/server/routes/auth.ts';
+import { addMcpGeneratorRoutes } from './src/server/mcp-generator.ts';
 
 // ── Operational Resilience Core Tools ────────────────────────────────────────
 import { asyncHandler, securePathResolve, safeParseJson, resolvePrincipal, GovernancePrincipal } from './src/server/utils/core.ts';
@@ -102,9 +111,21 @@ class AppLogger {
   }
 }
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || 'MISSING_API_KEY', // FALLBACK ADDED
-});
+const createAiClient = (vault?: any) => {
+  const apiKey = (vault && vault['GEMINI_API_KEY']) || process.env.GEMINI_API_KEY;
+  const project = (vault && vault['GOOGLE_CLOUD_PROJECT']) || process.env.GOOGLE_CLOUD_PROJECT;
+  const location = (vault && vault['GOOGLE_CLOUD_LOCATION']) || process.env.GOOGLE_CLOUD_LOCATION || 'us-west2';
+
+  // If a custom cloud project is provided, attempt Vertex
+  if (project && project !== 'gen-lang-client-0281999829') {
+    return new GoogleGenAI({ enterprise: true, project, location });
+  }
+  
+  // Default to standard AI Studio API Key (bypasses IAM 403s on the default project)
+  return new GoogleGenAI({ apiKey: apiKey || 'MISSING_API_KEY' });
+};
+
+const ai = createAiClient();
 
 // ── COGNITIVE ENGINE: MODEL ROUTING ──────────────────────────────────────────
 const MODEL_ROUTING = {
@@ -190,6 +211,12 @@ class PerceptionEngine {
         return { url, content: null };
       }
 
+      // Workspace URLs require OAuth and cannot be anonymously scraped
+      if (['drive.google.com', 'docs.google.com', 'sheets.google.com', 'slides.google.com'].includes(urlObj.hostname)) {
+        AppLogger.info('Perception Engine: Skipping authenticated workspace URL', { url, traceId });
+        return { url, content: '[Google Workspace URLs cannot be anonymously scraped. Use the Drive integration.]' };
+      }
+
       const response = await axios.get(url, { 
         timeout: PerceptionEngine.TIMEOUT_MS, 
         headers: { 'User-Agent': 'Aura-AI-Perception-Engine/1.0' },
@@ -217,14 +244,25 @@ class PerceptionEngine {
       };
 
     } catch (error: any) {
-      AppLogger.error('Perception Engine: Fetch fault', error, { url, traceId });
+      if (error.response?.status === 401 || error.response?.status === 403) {
+         AppLogger.warn('Perception Engine: Access denied', { url, status: error.response.status, traceId });
+      } else {
+         AppLogger.warn('Perception Engine: Fetch fault', { url, error: error.message, traceId });
+      }
       return { url, content: `[System failed to fetch content from URL. Reason: ${error.message}]` };
     }
   }
 
   async processGroundingContext(userInput: string, payloadUrls: string[], traceId: string): Promise<{ contextText: string, urls: string[] }> {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const extractedUrls = userInput.match(urlRegex) || [];
+    let extractedUrls: string[] = userInput.match(urlRegex) || [];
+    
+    // Clean trailing punctuation from URLs (e.g. if embedded in quotes, backticks, parens)
+    extractedUrls = extractedUrls.map(u => u.replace(/[.,;:'"`)]+$/, ''));
+    
+    // Filter out obvious code template strings
+    extractedUrls = extractedUrls.filter(u => !u.includes('${'));
+    
     const uniqueUrls = [...new Set([...(payloadUrls || []), ...extractedUrls])].slice(0, PerceptionEngine.MAX_URLS_PER_PROMPT);
 
     if (uniqueUrls.length === 0) return { contextText: '', urls: [] };
@@ -254,23 +292,23 @@ const CanonicalEntitySchema = z.object({
 
 const ADK_PAYLOAD_SCHEMAS = {
   delegate_work_query: z.object({
-    action: z.enum(['summarize_inbox', 'find_doc', 'schedule_meeting', 'draft_email', 'find_location']),
-    intent: z.string().min(5).describe("Plain English intent description"),
-  }).strict(),
+    action: z.string().optional().describe("Action such as summarize_inbox, find_doc, draft_email, etc."),
+    intent: z.string().min(5).optional().describe("Plain English intent description"),
+    delete_emails_query: z.array(z.string()).optional().describe("List of Gmail search queries for deletion"),
+  }).passthrough(),
 
   delegate_sports_query: z.object({
-    action: z.enum(['team_trend', 'tonight_lines', 'live_state', 'game_log']),
-    intent: z.string().min(5).describe("Original user intent"),
-    // Inlined to strictly avoid $ref generation in zod-to-json-schema
+    action: z.string().optional().describe("Action such as team_trend, tonight_lines, live_state, game_log"),
+    intent: z.string().optional().describe("Original user intent"),
     canonical_entities: z.array(z.object({
-      type: z.enum(['team', 'player', 'league', 'asset', 'subject']),
-      id: z.string().min(1).describe("The official canonical abbreviation or name.")
-    })).min(1).describe("Strictly mapped canonical entities. Resolve slang to standard abbreviations."),
+      type: z.string().optional(),
+      id: z.string().optional()
+    })).optional().describe("Strictly mapped canonical entities."),
     market_context: z.object({
-      type: z.enum(['moneyline', 'spread', 'totals', 'player_props', 'outright', 'none']).default('none'),
-      side: z.enum(['over', 'under', 'home', 'away', 'yes', 'no', 'none']).optional()
-    }).default({ type: 'none' }).describe("The normalized betting market and contextual side (e.g. totals over).")
-  }).strict(),
+      type: z.string().optional(),
+      side: z.string().optional()
+    }).optional()
+  }).passthrough(),
 
   delegate_crypto_query: z.object({
     action: z.enum(['buy_crypto', 'sell_crypto', 'swap_crypto', 'send_crypto', 'spend_from_card', 'withdraw_to_bank', 'deposit_to_exchange']),
@@ -286,9 +324,13 @@ const ADK_PAYLOAD_SCHEMAS = {
   }).strict(),
 
   delegate_music_query: z.object({
-    action: z.enum(['play', 'save', 'add_to_playlist', 'share', 'discover']),
-    intent: z.string()
-  }).strict(),
+    action: z.string().describe("The music control plane action to dispatch (e.g. 'play_music', 'search_music', 'add_to_playlist', 'create_playlist', 'get_playlists', 'get_now_playing', 'control_playback', 'play', 'save', 'share', 'discover')"),
+    intent: z.string().optional().describe("Fuzzy natural language query, song details, or command intent"),
+    track_id: z.string().optional().describe("Associated track ID (iTunes/YouTube) if applicable"),
+    playlist_id: z.string().optional().describe("Associated playlist ID if applicable"),
+    playlist_name: z.string().optional().describe("Associated playlist name if applicable"),
+    command: z.string().optional().describe("The control playback command (e.g., 'pause', 'skip')")
+  }),
   
   schedule_automation_query: z.object({
     cadence: z.enum(['daily', 'weekly', 'monthly', 'event_triggered']),
@@ -302,10 +344,12 @@ const ADK_PAYLOAD_SCHEMAS = {
   }).strict(),
   
   propose_codebase_modification: z.object({
-    file_path: z.string(),
-    modification: z.string().describe("Detailed specs on API docs, rate limits, and entity mapping requirements."),
-    new_content: z.string()
-  }).strict()
+    file_path: z.string().describe("The file path to modify, starting with / (e.g. /src/App.tsx)"),
+    modification: z.string().describe("Summary of the changes (e.g. 'Added a button')"),
+    new_content: z.string().min(1).describe("The complete entirely new content for the file. This replaces the old file."),
+    modification_type: z.string().optional(),
+    target_block_identifier: z.string().optional()
+  }),
 };
 
 // ── SYNC ZOD TO GEMINI TOOL SCHEMAS (ZERO DRIFT) ────────────────────────────
@@ -362,12 +406,25 @@ type AdkHandler = (res: Response, args: any, principal: GovernancePrincipal, use
 const ADK_DISPATCHER: Record<string, AdkHandler> = {
   delegate_sports_query: async (res, args, principal, userInput) => {
     const { handleSportsStream } = await import('./src/server/services/sharp-sports-handler.ts');
-    await handleSportsStream({ principal, userMessage: args.intent || userInput, res });
+    await handleSportsStream({ 
+        principal, 
+        userMessage: args.intent || userInput, 
+        canonicalEntities: args.canonical_entities, 
+        marketContext: args.market_context, 
+        systemInstruction: SPORTS_SPECIALIST,
+        res 
+    });
     return true; // Indicates the response stream was fully handled
   },
   delegate_work_query: async (res, args, principal, userInput, req) => {
     const { handleWorkspaceStream } = await import('./src/server/services/workspace-adk-runner.js');
-    await handleWorkspaceStream({ principal, userMessage: args.intent || userInput, res, firebaseClaims: (principal as any).claims || (req as any).firebaseClaims });
+    await handleWorkspaceStream({ 
+        principal, 
+        userMessage: args.intent || userInput, 
+        systemInstruction: WORK_SPECIALIST,
+        res, 
+        firebaseClaims: (principal as any).claims || (req as any).firebaseClaims 
+    });
     return true;
   },
   generate_react_app: async (res, args) => {
@@ -376,62 +433,30 @@ const ADK_DISPATCHER: Record<string, AdkHandler> = {
     return false; // False indicates it is an inline artifact; text stream may continue
   },
   propose_codebase_modification: async (res, args) => {
-    const payload = JSON.stringify({ summary: args.modification, files: [{ path: args.file_path, content: args.new_content }] });
+    // Generate canonical payload for the sandbox
+    const payload = JSON.stringify({ 
+      summary: args.modification, 
+      files: [{ path: args.file_path, content: args.new_content }] 
+    });
     res.write(`\n\n[AURA_APP_MODIFICATION]\n${payload}\n[/AURA_APP_MODIFICATION]\n\n`);
     return false;
   },
   // Seamless graceful fallbacks for other domains
   delegate_crypto_query: async (res, args) => { res.write(`\n\n[AURA_CRYPTO]\n${JSON.stringify(args)}\n[/AURA_CRYPTO]\n\n`); return false; },
   delegate_markets_query: async (res, args) => { res.write(`\n\n[AURA_MARKETS]\n${JSON.stringify(args)}\n[/AURA_MARKETS]\n\n`); return false; },
-  delegate_music_query: async (res, args) => { res.write(`\n\n[AURA_MUSIC]\n${JSON.stringify(args)}\n[/AURA_MUSIC]\n\n`); return false; },
+  delegate_music_query: async (res, args, principal, userInput) => {
+    const { handleMusicStream } = await import('./src/server/services/music-handler.ts');
+    await handleMusicStream({
+        principal,
+        userMessage: args.intent || userInput,
+        action: args.action,
+        systemInstruction: MUSIC_SPECIALIST,
+        res
+    });
+    return true;
+  },
   schedule_automation_query: async (res, args) => { res.write(`\n\n[AURA_AUTOMATION]\n${JSON.stringify(args)}\n[/AURA_AUTOMATION]\n\n`); return false; }
 };
-
-// ── ADK ORCHESTRATOR SYSTEM PROMPTS ────────────────────────────────────────
-const SYSTEM_PROMPT = `You are AURA, an elite Chief of Staff, Master Orchestrator, and Product Visionary powering a premium Series A consumer application via a native Multi-Agent ADK.
-
-YOUR ARCHITECTURE: THE SPINE & THE FACE
-You do not "chat." You provision strictly typed, immutable database records called Artifacts (The Spine), which the client renders as beautiful, native consumer UIs (The Face). 
-
-Whenever you need to render a complex response (like dashboard for Sports, Markets, Work inbox, Crypto portfolio), you MUST output it inside of a JSON payload block using the specific tags below (NO markdown backticks around the tag!):
-
-[AURA_ARTIFACT type="sports"]
-{
-  "title": "Tonight's Lines",
-  "data": [
-    { "label": "LAL vs GSW", "value": "LAL -4.5" }
-  ]
-}
-[/AURA_ARTIFACT]
-
-[AURA_ARTIFACT type="crypto"]
-{
-  "title": "Crypto Markets",
-  "data": [
-    { "label": "BTC", "value": "$59,200", "trend": "+2.4%" }
-  ]
-}
-[/AURA_ARTIFACT]
-
-Types can be: "sports", "crypto", "markets", "work", "music", "code".
-
-For text responses, remain warm, punchy, and fiercely concise (max 1 sentence). Provide the "So what?", never just raw data. Be a visionary!`;
-
-const DESIGN_SPECIALIST_PROMPT = `You are a world-class Art Director and UI/UX designer, a hybrid of a Google Principal Engineer and an Apple-era Jony Ive designer. Your task is not just to write code, but to translate a strategic narrative into a single, commercially impeccable UI artifact.
-
-YOUR DESIGN PRINCIPLES:
-1. AESTHETIC FUSION: Marry Google's structured clarity with Apple's premium essentialism.
-2. TYPOGRAPHICAL PRECISION: Treat typography as a primary feature—calm, confident, and deliberate. Use deep grays (\`text-slate-900\`) for primary data and muted grays (\`text-slate-500\`) for secondary context. Font size, weight, and tracking do more work than layout.
-3. INTENTIONAL MOTION: Use subtle, physics-based animations (Framer Motion) that guide and inform, never distract. Motion must explain state changes (enter, exit, morph).
-4. PHILOSOPHICAL DEPTH: Ensure the final design visually embodies the core concept behind the ask. Every pixel must justify its existence.
-5. ABSOLUTE AFFORDANCE: Interactive elements must scream interactivity via flawless hover (\`hover:bg-slate-50\`), focus-visible (\`focus-visible:ring-2\`), and active (\`active:scale-[0.98]\`) states. Static elements must remain completely quiet.
-6. THE "SWEAT": Final commercial polish lives in the edge cases. Build flawless empty states, beautiful loading skeletons, and graceful error boundaries.
-
-YOUR CODE GENERATION PROTOCOL:
-- Output pristine, drop-in ready React TSX. MUST include all necessary imports.
-- Rely strictly on Tailwind CSS, Framer Motion, and \`lucide-react\` icons.
-- DO NOT wrap the output in markdown fences. DO NOT write setup boilerplate.
-- The output must be a single, production-ready Artifact.`;
 
 // ── UTILITIES ────────────────────────────────────────
 const ioMutex = new class {
@@ -629,322 +654,246 @@ function setupMiddleware(app: express.Express) {
 
 function setupAiRoutes(app: express.Express) {
   app.post('/api/chat', asyncHandler(async (req: any, res: any) => {
+    // ── GATEWAY AUTHORIZATION ──
     const principal = req.principal; 
-    const { messages } = req.body;
-    let systemInstruction = SYSTEM_PROMPT;
+    
+    // Shield boundary at the endpoint level
+    if (typeof (governanceService as any).can === 'function' && !(governanceService as any).can(principal, 'execute:ai_chat')) {
+      AppLogger.warn('Principal blocked at Gateway. Missing execute:ai_chat role.', { principalId: principal.principal_id, roles: principal.roles?.join(',') || 'none', traceId: req.traceId });
+      return res.status(403).json({ error: "Principal does not have 'execute:ai_chat' grant." });
+    } else if (typeof (governanceService as any).can !== 'function') {
+        // Fallback check if 'can' method is missing during structural updates
+        if (!principal.roles || (!principal.roles.includes('system') && !principal.roles.includes('execute:ai_chat'))) {
+             AppLogger.warn('Principal blocked at Gateway (Fallback check).', { principalId: principal.principal_id, traceId: req.traceId });
+             return res.status(403).json({ error: "Principal lacks authorization." });
+        }
+    }
 
+    const { messages, mode, groundingUrls } = ChatRequestSchema.parse(req.body);
+    let resolvedMode: string = mode;
+
+    const userInput = messages[messages.length - 1]?.content || '';
+    if (!userInput || userInput.trim().length === 0) {
+      return res.status(400).json({ error: "missing_user_input", message: "Build loop requires explicit user input." });
+    }
+
+    AppLogger.info('Chat Request Initialized', { requestedMode: mode, resolvedMode, traceId: req.traceId, principalId: principal.principal_id });
+
+    // ── AUTONOMOUS URL PERCEPTION & GROUNDING ──
+    const { contextText, urls: processedUrls } = await perceptionEngine.processGroundingContext(userInput, groundingUrls || [], req.traceId);
+    let systemInstruction = ORCHESTRATOR_PROMPT;
+
+    if (contextText) {
+      systemInstruction += contextText;
+    }
+
+    // Sanitize input format for Gemini SDK
+    const contents = messages.map((m: any) => {
+      const parts = [];
+      if (m.functionCall) parts.push({ functionCall: m.functionCall });
+      if (m.functionResponse) parts.push({ functionResponse: m.functionResponse });
+      if (m.attachments?.length > 0) {
+        parts.push(...m.attachments.map((a: any) => {
+          const pureBase64 = a.data.includes(',') ? a.data.split(',')[1] : a.data;
+          return { inlineData: { mimeType: a.mimeType, data: pureBase64 } };
+        }));
+      }
+      if (m.content) parts.push({ text: m.content });
+      if (parts.length === 0) parts.push({ text: ' ' }); // Fallback
+      return { role: m.role, parts };
+    });
+
+    const recentEntities = await entityRegistry.query({ limit: 10 });
+    if (recentEntities.length > 0) {
+      systemInstruction += '\n\nRECENT ENTITIES (Reference their canonical aura:// URI):\n';
+      systemInstruction += recentEntities.map(e => `- [${e.type}] ${e.uri}`).join('\n');
+    }
+
+    const repoContext = (req.body as any).repoContext;
+    if (repoContext && repoContext.repo) {
+      systemInstruction += `\n\nCONNECTED REPOSITORY: ${repoContext.repo} (branch: ${repoContext.branch || 'main'})\n`;
+      if (repoContext.tree && Array.isArray(repoContext.tree)) {
+        systemInstruction += `\nFILE TREE (${repoContext.tree.length} files):\n`;
+        systemInstruction += repoContext.tree.map((f: any) => `- ${f.path} (${f.size || '?'}b)`).join('\n');
+      }
+      systemInstruction += `\nYou are connected to this repository. You can read files, analyze code, and make changes using the propose_codebase_modification tool.`;
+    }
+
+    let temperature = 0.5;
+
+    // Explicit Cognitive Overrides
+    const isComplex = ['research', 'coding', 'design', 'build', 'artifact'].includes(resolvedMode);
+    
+    switch (resolvedMode) {
+      case 'research': systemInstruction += '\n\nMODE: RESEARCH — Conduct structural multi-source investigation.'; temperature = 0.3; break;
+      case 'design': systemInstruction += '\n\n' + DESIGN_SPECIALIST; temperature = 0.2; break;
+      case 'coding': systemInstruction += '\n\n' + CODE_SPECIALIST; temperature = 0.2; break;
+      case 'artifact': temperature = 1.0; break;
+    }
+
+    // ── Primary ADK Orchestrator ──
     const chatConfig: any = { 
       systemInstruction, 
-      temperature: 0.5, 
+      temperature, 
+      thinkingConfig: { thinkingBudget: 8192 } 
     };
+
+    const useTools = ['chat', 'search', 'artifact', 'build', 'design', 'research'].includes(resolvedMode);
+    if (useTools) {
+      chatConfig.tools = [...ADK_TOOLS];
+      if (resolvedMode === 'search') chatConfig.tools.push({ googleSearch: {} } as any);
+    }
+
+    if (resolvedMode === 'build') {
+      chatConfig.toolConfig = { functionCallingConfig: { mode: 'AUTO', allowedFunctionNames: ['propose_codebase_modification'] } };
+    } else if (resolvedMode === 'artifact' || resolvedMode === 'design') {
+      chatConfig.toolConfig = { functionCallingConfig: { mode: 'AUTO', allowedFunctionNames: ['generate_react_app'] } };
+    } else {
+      chatConfig.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+    }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.write(' ');
 
-    let currentMessages = [...messages.slice(0, -1), messages[messages.length - 1]].map((m: any) => ({
-       role: m.role,
-       parts: [{ text: m.content || " " }]
-    }));
+    let clientDisconnected = false;
+    res.on('close', () => { clientDisconnected = true; });
 
-    try {
-      const chat = ai.chats.create({
-        model: 'gemini-2.5-flash',
-        config: chatConfig,
-        history: currentMessages.slice(0, -1)
-      });
-
-      const responseStream = await chat.sendMessageStream({ message: currentMessages[currentMessages.length - 1].parts });
-      
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          res.write(chunk.text);
+    // ── DYNAMIC RETRY BUDGET (THE HEALING LOOP LIMIT) ──
+    const getRetryBudget = (p: GovernancePrincipal & { tier?: string }, mode: string) => {
+        if (p.tier === 'enterprise' || p.roles?.includes('premium_tier') || p.roles?.includes('global_administrator') || p.roles?.includes('system')) {
+            return 3;
         }
-      }
-
-      if (!res.writableEnded) res.end();
-
-    } catch (err: any) {
-      AppLogger.error('Vertex AI Stream Rupture', err, { traceId: req.traceId, principalId: principal.principal_id });
-      if (!res.headersSent) res.status(502).json({ error: 'Upstream AI provider connection failed' });
-      else res.end('\n\n[SYSTEM FAULT: Stream unexpectedly terminated by backend policy.]');
-    }
-  }));
-}
-
-function setupDeployRoutes(app: express.Express) {
-  app.post('/api/deploy', asyncHandler(async (req: any, res: any) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    
-    if (typeof res.flushHeaders === 'function') {
-      res.flushHeaders();
-    }
-
-    const sendSSE = (data: any) => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
+        return isComplex ? 2 : 1; 
     };
+    
+    let maxRetries = getRetryBudget(principal, resolvedMode);
+    let currentMessages = [...contents.slice(0, -1), contents[contents.length - 1]];
 
-    try {
-      // 1. Validate deploy payload with Zod
-      const parsed = DeployRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        sendSSE({ state: 'error', error: `Invalid deploy payload: ${parsed.error.message}` });
-        res.write('data: [DONE]\n\n');
-        res.end();
-        return;
-      }
+    const targetModel = isComplex ? MODEL_ROUTING.reasoning : MODEL_ROUTING.fast;
 
-      const { files, summary } = parsed.data;
-
-      // Determine Principal Context for Governance
-      const principal = (req.principal && req.principal.roles && req.principal.roles.length > 0)
-        ? req.principal
-        : { principal_id: req.body.principal_id || 'dev_operator', roles: req.body.roles || ['release_manager'] };
-
-      // 2. Convert files into raw_artifact_manifest
-      const rawArtifactManifest: any = {
-        id: `manifest-${Date.now()}`,
-        deployment_id: `deploy-${Math.random().toString(36).substring(2, 9)}`,
-        sensitivity_level: req.body.sensitivity_level || "STANDARD",
-        summary: summary || "Aura self-modification",
-        files: files.map((f: any) => ({
-          path: f.path,
-          description: f.description || ""
-        }))
-      };
-
-      if (req.body.personal_email !== undefined) {
-        rawArtifactManifest.personal_email = req.body.personal_email;
-      }
-      if (req.body.authentication_token !== undefined) {
-        rawArtifactManifest.authentication_token = req.body.authentication_token;
-      }
-
-      sendSSE({ state: 'committing' });
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      // 3 & 4 & 5. Run governor, redact secrets, and check principal permission before writing anything
-      const pipeline = new ArtifactProvisioningPipeline(governanceService);
-      let governedManifest: any;
+    while (maxRetries >= 0) {
       try {
-        governedManifest = await pipeline.provision_artifact_for_deployment(rawArtifactManifest, principal);
-      } catch (govError: any) {
-        AppLogger.error('Deploy aborted by Enterprise Governance Service', govError);
-        sendSSE({ state: 'error', error: govError.message || 'Governance policy violation: Action Denied' });
-        res.write('data: [DONE]\n\n');
-        res.end();
-        return;
-      }
-
-      // 6. Write files only after governance passes (to preserve local workspace state)
-      for (const file of files) {
-        const safePath = path.resolve(process.cwd(), file.path);
-        if (!safePath.startsWith(process.cwd())) {
-          throw new Error(`Directory traversal attempt blocked: ${file.path}`);
+        let chat;
+        try {
+          chat = ai.chats.create({
+            model: targetModel,
+            config: chatConfig,
+            history: currentMessages.slice(0, -1)
+          });
+        } catch (initErr) {
+           AppLogger.warn(`Primary model ${targetModel} unavailable, falling back`, { traceId: req.traceId, principalId: principal.principal_id });
+           chat = ai.chats.create({
+             model: isComplex ? MODEL_ROUTING.fallback_reasoning : MODEL_ROUTING.fallback_fast,
+             config: chatConfig,
+             history: currentMessages.slice(0, -1)
+           });
         }
 
-        await fs.mkdir(path.dirname(safePath), { recursive: true });
-        await fs.writeFile(safePath, file.content, 'utf8');
-        AppLogger.info(`Deploy service: Wrote file to disk: ${file.path}`);
+        const stream = await chat.sendMessageStream({ message: currentMessages[currentMessages.length - 1].parts });
+        
+        let streamedResponse = '';
+        let isDelegated = false;
+        let retryTriggered = false;
+
+        for await (const chunk of stream) {
+          if (clientDisconnected || res.writableEnded) break;
+
+          // ── THE AUTONOMOUS HEALING EXECUTION BOUNDARY ──
+          if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+            for (const call of chunk.functionCalls) {
+              AppLogger.info(`[adk.orchestrator] Native Tool Invocation: ${call.name}`, { traceId: req.traceId, principalId: principal.principal_id });
+
+              const schema = ADK_PAYLOAD_SCHEMAS[call.name as keyof typeof ADK_PAYLOAD_SCHEMAS];
+              let pristineArgs: any;
+
+              if (schema) {
+                // THE GATEKEEPER WALL
+                const validation = schema.safeParse(call.args);
+                
+                if (!validation.success) {
+                  // INSTRUMENT FAILURE
+                  const errorContext = validation.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(' | ');
+                  AppLogger.warn(`[adk.boundary_rejection] Schema violation on ${call.name}`, { traceId: req.traceId, errors: errorContext, principalId: principal.principal_id });
+                  
+                  bqTelemetry.streamTelemetryEvent('LLM_SCHEMA_VIOLATION', {
+                    traceId: req.traceId,
+                    principal_id: principal.principal_id,
+                    tool_name: call.name,
+                    attempted_payload: JSON.stringify(call.args),
+                    violations: errorContext
+                  }).catch(() => {});
+
+                  if (maxRetries > 0) {
+                    // THE SELF-HEALING LOOP
+                    maxRetries--;
+                    currentMessages.push({ role: 'model', parts: [{ functionCall: call }] });
+                    currentMessages.push({ 
+                      role: 'user', 
+                      parts: [{ 
+                        functionResponse: {
+                          name: call.name,
+                          response: {
+                            error: "SCHEMA_VALIDATION_FAILED",
+                            details: errorContext,
+                            instruction: "Correct your JSON payload to match the exact schema requirements and call the function again. Do NOT invent strings for Enums."
+                          }
+                        }
+                      }]
+                    });
+                    retryTriggered = true;
+                    break; 
+                  } else {
+                     res.write(`\n\n> [!WARNING]\n> **Blocked Action Receipt**\n> Agent attempted to execute \`${call.name}\` with a malformed payload. Zod firewall held.\n> Violations: ${errorContext}\n`);
+                     isDelegated = true;
+                     break;
+                  }
+                }
+                pristineArgs = validation.data;
+              } else {
+                pristineArgs = call.args; 
+              }
+
+              if (retryTriggered) break;
+
+              // ── PRISTINE O/C TYPE-SAFE DISPATCH ──
+              try {
+                const handler = ADK_DISPATCHER[call.name as keyof typeof ADK_DISPATCHER];
+                if (handler) {
+                  isDelegated = await handler(res, pristineArgs, principal, userInput, req);
+                } else {
+                  AppLogger.warn(`[adk.orchestrator] Unknown function call: ${call.name}`, { traceId: req.traceId, principalId: principal.principal_id });
+                }
+              } catch (subErr: any) {
+                AppLogger.error(`[adk.orchestrator] Agent execution failed: ${call.name}`, subErr, { traceId: req.traceId, principalId: principal.principal_id });
+                res.write(`\n\n> [!WARNING]\n> **Agent Delegation Failed**\n> Sub-Agent: \`${call.name}\`\n> Fault: ${subErr.message}\n`);
+              }
+            }
+            if (retryTriggered || isDelegated) break; 
+          }
+
+          if (chunk.text && !isDelegated && !retryTriggered) {
+            res.write(chunk.text);
+            streamedResponse += chunk.text;
+          }
+        }
+
+        if (retryTriggered) continue; // Loop again and let LLM heal itself
+        
+        if (streamedResponse.includes('[AURA_')) {
+          entityRegistry.extractAndRegister(streamedResponse).catch(() => { });
+        }
+        
+        if (!res.writableEnded) res.end();
+        break; // Exit while loop naturally
+
+      } catch (err: any) {
+        AppLogger.error('Vertex AI Stream Rupture', err, { traceId: req.traceId, principalId: principal.principal_id });
+        if (!res.headersSent) res.status(502).json({ error: 'Upstream AI provider connection failed' });
+        else res.end('\n\n[SYSTEM FAULT: Stream unexpectedly terminated by backend policy.]');
+        break;
       }
-
-      // 7. Emit SSE building / routing states
-      sendSSE({ state: 'building' });
-      await new Promise(resolve => setTimeout(resolve, 1200));
-
-      sendSSE({ state: 'routing' });
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      const auditTrail = governanceService.auditLogStream.filter((log: any) => 
-        log.details.deployment_id === rawArtifactManifest.deployment_id || 
-        log.details.resource_name?.includes(rawArtifactManifest.deployment_id) || 
-        log.details.payload_id === governedManifest.id
-      );
-
-      // Trigger actual Cloud Deployment Pipeline
-      const cloudPipeline = new CloudDeploymentPipeline();
-      const platform = req.body.platform || 'github';
-      const serviceId = req.body.service_id || 'aura-service';
-      const deploymentMode = req.body.deployment_mode;
-
-      const serviceUrl = await cloudPipeline.deploy(
-        principal.principal_id,
-        serviceId,
-        governedManifest,
-        auditTrail,
-        files.map((f: any) => ({ path: f.path, content: f.content })),
-        platform,
-        deploymentMode
-      );
-
-      // 8. Write aura-manifest.json / audit receipt to local workspace
-      const manifestPath = path.join(process.cwd(), 'aura-manifest.json');
-      const deploymentReceipt = {
-        manifest: governedManifest,
-        audit_trail: auditTrail,
-        deployed_at: new Date().toISOString(),
-        url: serviceUrl
-      };
-      await fs.writeFile(manifestPath, JSON.stringify(deploymentReceipt, null, 2), 'utf8');
-      AppLogger.info('Deploy service: Wrote aura-manifest.json with audit receipt');
-
-      sendSSE({
-        state: 'done',
-        revision: governedManifest.deployment_id,
-        branch: 'main',
-        url: serviceUrl
-      });
-      res.write('data: [DONE]\n\n');
-      res.end();
-
-    } catch (error: any) {
-      AppLogger.error('Deployment failure', error);
-      sendSSE({ state: 'error', error: error.message || 'Unknown deployment error' });
-      res.write('data: [DONE]\n\n');
-      res.end();
-    }
-  }));
-
-  // ── Traffic Proxy / Secure Gateway Router ──────────────────────────────────
-  app.all('/api/proxy/:serviceId/*', asyncHandler(async (req: any, res: any) => {
-    const { serviceId } = req.params;
-    
-    // Determine Principal Context for Governance
-    const principal = (req.principal && req.principal.roles && req.principal.roles.length > 0)
-      ? req.principal
-      : { principal_id: req.body.principal_id || 'dev_operator', roles: req.body.roles || ['release_manager'] };
-
-    const actionContext = {
-      action_requested: "read",
-      resource_identifier: {
-        type: "production_endpoint",
-        name: serviceId,
-        sensitivity: req.body.sensitivity_level || "STANDARD"
-      }
-    };
-
-    try {
-      // Tyrannical Governance Boundary Enforcement: Fail-Closed
-      governanceService.apply_governance_policies({}, principal, actionContext);
-    } catch (govError: any) {
-      AppLogger.error('Proxy request denied by Enterprise Governance Service', govError, { serviceId, principalId: principal.principal_id });
-      return res.status(403).json({ error: govError.message || 'Governance policy violation: Access Denied' });
-    }
-
-    try {
-      const endpoint = await EndpointRegistryService.getEndpoint(serviceId);
-      if (!endpoint || !endpoint.url) {
-        return res.status(404).json({ error: `Service '${serviceId}' not found or has no active URL` });
-      }
-
-      const targetPath = req.params[0] || '';
-      const targetUrl = `${endpoint.url.replace(/\/$/, '')}/${targetPath}`;
-
-      AppLogger.info(`[TrafficProxy] Forwarding request to ${targetUrl}`, { serviceId, method: req.method });
-
-      const response = await axios({
-        method: req.method,
-        url: targetUrl,
-        headers: {
-          ...req.headers,
-          host: new URL(endpoint.url).host,
-          authorization: req.headers.authorization
-        },
-        data: req.body,
-        validateStatus: () => true
-      });
-
-      res.status(response.status).set(response.headers).send(response.data);
-    } catch (proxyError: any) {
-      AppLogger.error('Proxy execution failure', proxyError, { serviceId });
-      res.status(502).json({ error: `Proxy routing failure: ${proxyError.message || 'Upstream unavailable'}` });
-    }
-  }));
-
-  // ── Secure Redeployment / Rollback Mechanism ─────────────────────────────
-  app.post('/api/deploy/rollback', asyncHandler(async (req: any, res: any) => {
-    const { serviceId, targetRevision } = req.body;
-    if (!serviceId || !targetRevision) {
-      return res.status(400).json({ error: 'Missing serviceId or targetRevision in request body' });
-    }
-
-    // Determine Principal Context for Governance
-    const principal = (req.principal && req.principal.roles && req.principal.roles.length > 0)
-      ? req.principal
-      : { principal_id: req.body.principal_id || 'dev_operator', roles: req.body.roles || ['release_manager'] };
-
-    const actionContext = {
-      action_requested: "deploy_critical",
-      resource_identifier: {
-        type: "production_artifact",
-        name: serviceId,
-        sensitivity: req.body.sensitivity_level || "HIGH"
-      }
-    };
-
-    try {
-      // Tyrannical Governance Boundary Enforcement: Fail-Closed
-      governanceService.apply_governance_policies({}, principal, actionContext);
-    } catch (govError: any) {
-      AppLogger.error('Rollback request denied by Enterprise Governance Service', govError, { serviceId, principalId: principal.principal_id });
-      return res.status(403).json({ error: govError.message || 'Governance policy violation: Action Denied' });
-    }
-
-    try {
-      const receipts = await EndpointRegistryService.getDeployReceipts(serviceId);
-      const targetReceipt = receipts.find(r => r.revision === targetRevision);
-      if (!targetReceipt) {
-        return res.status(404).json({ error: `Deploy receipt for revision '${targetRevision}' not found` });
-      }
-
-      const cloudPipeline = new CloudDeploymentPipeline();
-      const platform = req.body.platform || 'github';
-
-      // Re-apply governance policies on rollback manifest
-      const governedManifest = governanceService.apply_governance_policies(
-        targetReceipt.governedManifest,
-        principal,
-        actionContext
-      );
-
-      const auditTrail = governanceService.auditLogStream.filter((log: any) => 
-        log.details.deployment_id === governedManifest.deployment_id || 
-        log.details.resource_name?.includes(governedManifest.deployment_id) || 
-        log.details.payload_id === governedManifest.id
-      );
-
-      const deploymentMode = req.body.deployment_mode || targetReceipt.deployment_mode;
-
-      const serviceUrl = await cloudPipeline.deploy(
-        principal.principal_id,
-        serviceId,
-        governedManifest,
-        auditTrail,
-        [], // Rollback triggers redeployment of existing revision files
-        platform,
-        deploymentMode
-      );
-
-      // Write local aura-manifest.json for local workspace compatibility
-      const manifestPath = path.join(process.cwd(), 'aura-manifest.json');
-      const deploymentReceipt = {
-        manifest: governedManifest,
-        audit_trail: auditTrail,
-        deployed_at: new Date().toISOString(),
-        url: serviceUrl
-      };
-      await fs.writeFile(manifestPath, JSON.stringify(deploymentReceipt, null, 2), 'utf8');
-
-      res.json({
-        success: true,
-        url: serviceUrl,
-        revision: targetRevision
-      });
-    } catch (rollbackError: any) {
-      AppLogger.error('Rollback execution failure', rollbackError, { serviceId, targetRevision });
-      res.status(500).json({ error: `Rollback failed: ${rollbackError.message || 'Execution error'}` });
     }
   }));
 }
@@ -982,10 +931,25 @@ async function startServer() {
   });
 
   setupMiddleware(app);
+  
+  const { chronosRouter } = await import('./src/services/automation-runner/index.ts');
+  app.use(chronosRouter);
+
   setupWebhookRoutes(app);
   setupAiRoutes(app);
-  setupDeployRoutes(app);
   setupAuthRoutes(app, { bqTelemetry });
+  addMcpGeneratorRoutes(app);
+
+  const { setupMusicRoutes } = await import('./src/server/routes/music.ts');
+  setupMusicRoutes(app);
+
+  app.use((err: any, req: any, res: any, next: any) => {
+    AppLogger.error('Unhandled request boundary fault', err, { traceId: req.traceId });
+    if (err && err.name === 'ZodError') {
+      return res.status(400).json({ error: 'SCHEMA_VALIDATION_FAILED', details: err.errors });
+    }
+    res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: err.message || 'An unexpected error occurred.' });
+  });
 
   if (process.env.NODE_ENV !== "production") {
     try {

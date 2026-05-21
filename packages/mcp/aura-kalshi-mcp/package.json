@@ -1,0 +1,20 @@
+{
+  "name": "aura-kalshi-mcp",
+  "version": "1.0.0",
+  "description": "Functional Kalshi MCP server (Read-only API client with Governance Lock)",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "npx vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "vitest": "latest",
+    "typescript": "latest"
+  }
+}

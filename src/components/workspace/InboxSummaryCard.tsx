@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { formatDistanceToNow } from 'date-fns';
-import { motion, AnimatePresence, useMotionValue, useTransform } from 'framer-motion';
+import { motion, AnimatePresence, useMotionValue, useTransform } from 'motion/react';
 import { cn } from '../../lib/utils';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Skeleton } from '../ui/skeleton';
